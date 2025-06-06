@@ -1,0 +1,49 @@
+{
+  "custom_shifts": {
+    "duty_16h": {
+      "name": "一徹勤務",
+      "duration": 16,
+      "type": "duty",
+      "color": "#FF6B6B",
+      "description": "15時間20分の泊まり勤務",
+      "constraints": [
+        "no_next_day",
+        "nitetu_check"
+      ]
+    },
+    "duty_8h": {
+      "name": "日勤",
+      "duration": 8,
+      "type": "duty",
+      "color": "#4ECDC4",
+      "description": "8時間の日勤務",
+      "constraints": [
+        "no_next_day"
+      ]
+    },
+    "duty_12h": {
+      "name": "夜勤",
+      "duration": 12,
+      "type": "duty",
+      "color": "#45B7D1",
+      "description": "12時間の夜間勤務",
+      "constraints": [
+        "no_next_day"
+      ]
+    },
+    "off": {
+      "name": "非番",
+      "duration": 0,
+      "type": "off",
+      "color": "#96CEB4",
+      "description": "勤務後の休息日",
+      "constraints": []
+    }
+  },
+  "active_shifts": [
+    "duty_16h",
+    "duty_8h",
+    "duty_12h",
+    "off"
+  ]
+}

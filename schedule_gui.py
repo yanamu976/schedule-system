@@ -22,7 +22,7 @@
 """
 
 # =================== バージョン情報 ===================
-SYSTEM_VERSION = "v3.3"
+SYSTEM_VERSION = "v3.4"
 SYSTEM_BUILD_DATE = "2025-06-08"
 
 import streamlit as st
@@ -1334,23 +1334,29 @@ class CompleteGUI:
         st.success("🎉 **完全版**: 前月末勤務が正しく反映される月またぎ制約対応")
         
         # バージョン機能説明
-        with st.expander("🆕 v3.3 新機能", expanded=False):
+        with st.expander("🆕 v3.4 新機能", expanded=False):
             st.markdown("""
-            **🔥 動的従業員管理システム**
+            **🔥 動的従業員管理システム（v3.3から）**
             - 📊 スライダーで従業員数調整（3-20名）
             - 🏢 勤務場所数調整（2-10箇所）
             - 🤖 自動名前生成（A-san, B-san...）
             - ✏️ 名前編集機能
             
-            **🚫 従業員制約マトリックス**
+            **🚫 従業員制約マトリックス（v3.3から）**
             - 従業員別勤務場所制限
             - チェックボックス式設定
             - OR-Tools制約統合
             
-            **🧪 ストレステスト機能**
+            **🧪 ストレステスト機能（v3.3から）**
             - 高負荷テスト（最大20名×10箇所）
             - パフォーマンス測定
             - 制約限界テスト
+            
+            **🔧 v3.4 改善内容**
+            - ⚡ 勤務場所スライダーのリアルタイム反映
+            - 🔄 勤務場所数変更時の自動更新
+            - 📊 勤務場所設定数の視覚的表示
+            - ✅ 変更完了時の成功メッセージ表示
             """)
         
         # リセットボタンのみ表示
@@ -1838,11 +1844,21 @@ class CompleteGUI:
         
         st.markdown("---")
         
-        # 現在の勤務場所表示
+        # 現在の勤務場所表示（動的更新対応）
+        # スライダーで設定された勤務場所数に応じて動的に更新
+        current_duty_count = st.session_state.get('duty_location_count', 3)
+        if st.session_state.get('auto_generated', False) or current_duty_count != len(self.location_manager.get_duty_names()):
+            # 勤務場所数が変更された場合は自動更新
+            auto_locations = self._generate_duty_locations(current_duty_count)
+            self._update_location_manager(auto_locations)
+        
         duty_names = self.location_manager.get_duty_names()
         st.write("**現在の勤務場所:**")
-        for name in duty_names:
+        for i, name in enumerate(duty_names):
             st.write(f"• {name}")
+        
+        # 勤務場所数の情報表示
+        st.caption(f"設定数: {current_duty_count}箇所")
         
         # 詳細設定ボタン（勤務場所の下に配置）
         if st.button("⚙️ 詳細設定", use_container_width=True, key="detailed_settings_button"):
@@ -1891,6 +1907,16 @@ class CompleteGUI:
             value=st.session_state.get('duty_location_count', 3),
             help="駅A、指令、警乗などの勤務場所数を設定します"
         )
+        
+        # 勤務場所数が変更されたかチェック
+        prev_duty_count = st.session_state.get('prev_duty_location_count', duty_location_count)
+        if prev_duty_count != duty_location_count:
+            # 勤務場所数が変更された場合、自動的に勤務場所を更新
+            auto_locations = self._generate_duty_locations(duty_location_count)
+            self._update_location_manager(auto_locations)
+            st.session_state.prev_duty_location_count = duty_location_count
+            st.success(f"✅ 勤務場所を{duty_location_count}箇所に更新しました")
+        
         st.session_state.duty_location_count = duty_location_count
         
         # 自動生成ボタン
@@ -2674,6 +2700,7 @@ def main():
             st.write("- 🆕 **動的従業員管理**: スライダー式スケール調整")
             st.write("- 🆕 **従業員制約マトリックス**: 個別勤務場所制限")
             st.write("- 🆕 **ストレステスト機能**: 高負荷・パフォーマンステスト")
+            st.write("- ⚡ **リアルタイム勤務場所更新**: スライダー変更で即時反映")
             
             st.write("**色分け説明**:")
             st.write("- 🟡 **黄色**: 有休実現")

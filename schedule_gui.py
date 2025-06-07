@@ -22,7 +22,7 @@
 """
 
 # =================== バージョン情報 ===================
-SYSTEM_VERSION = "v3.8"
+SYSTEM_VERSION = "v3.9-debug"
 SYSTEM_BUILD_DATE = "2025-06-08"
 
 import streamlit as st
@@ -1910,9 +1910,12 @@ class CompleteGUI:
             for i, name in enumerate(display_duty_names):
                 st.write(f"• {name}")
         
-        # デバッグ表示（一時的）
-        if len(duty_names) != len(session_duty_names):
-            st.caption(f"🔧 Debug: manager={len(duty_names)}, session={len(session_duty_names)}")
+        # デバッグ表示（詳細）
+        st.caption(f"🔧 Debug: manager={len(duty_names)}, session={len(session_duty_names)}, display={len(display_duty_names)}")
+        if duty_names:
+            st.caption(f"🔧 Manager locations: {duty_names}")
+        if session_duty_names:
+            st.caption(f"🔧 Session locations: {session_duty_names}")
         
         # 設定との差異を表示
         actual_count = len(display_duty_names)
@@ -1983,9 +1986,23 @@ class CompleteGUI:
                 st.session_state.auto_generated = True
                 st.session_state.last_employee_count = employee_count
                 st.session_state.last_duty_count = duty_location_count
+                
+                # デバッグ: 生成前の状態確認
+                before_count = len(self.location_manager.get_duty_names())
+                st.write(f"🔍 デバッグ: 生成前勤務場所数 = {before_count}")
+                
                 # 勤務場所も同時に更新
                 auto_locations = self._generate_duty_locations(duty_location_count)
+                st.write(f"🔍 デバッグ: 生成された勤務場所数 = {len(auto_locations)}")
+                st.write(f"🔍 デバッグ: 生成された勤務場所 = {[loc['name'] for loc in auto_locations]}")
+                
                 self._update_location_manager(auto_locations)
+                
+                # デバッグ: 更新後の状態確認
+                after_count = len(self.location_manager.get_duty_names())
+                st.write(f"🔍 デバッグ: 更新後勤務場所数 = {after_count}")
+                st.write(f"🔍 デバッグ: 更新後勤務場所 = {self.location_manager.get_duty_names()}")
+                
                 st.success(f"✅ 従業員{employee_count}名・勤務場所{duty_location_count}箇所で生成しました")
                 st.rerun()
         

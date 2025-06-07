@@ -7,6 +7,9 @@
 - カレンダー複数選択対応
 - Excel色分け出力
 - ゲーミフィケーション機能（リアルタイム最適化可視化）
+- 動的従業員管理（3-20名スケール対応）
+- 従業員制約マトリックス機能
+- ストレステスト機能
 
 【重要な修正内容】
 🔧 マルチスレッド問題を完全修正（ScriptRunContext エラー解決）
@@ -17,6 +20,10 @@
 ✅ UI更新の安定化
 ✅ エラーハンドリング強化
 """
+
+# =================== バージョン情報 ===================
+SYSTEM_VERSION = "v3.3"
+SYSTEM_BUILD_DATE = "2025-06-08"
 
 import streamlit as st
 import xlsxwriter
@@ -1305,13 +1312,46 @@ class CompleteGUI:
     def _setup_page(self):
         """ページ設定（シンプル版）"""
         st.set_page_config(
-            page_title="勤務表システム（月またぎ完全版）",
+            page_title=f"勤務表システム {SYSTEM_VERSION}（月またぎ完全版）",
             page_icon="📅",
             layout="wide"
         )
         
-        st.title("📅 勤務表システム（月またぎ制約完全版）")
+        # タイトルとバージョン情報
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.title("📅 勤務表システム（月またぎ制約完全版）")
+        with col2:
+            st.markdown(f"""
+            <div style='text-align: right; margin-top: 20px;'>
+                <span style='background-color: #0E4B7C; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold;'>
+                    {SYSTEM_VERSION}
+                </span><br>
+                <span style='color: #666; font-size: 10px;'>{SYSTEM_BUILD_DATE}</span>
+            </div>
+            """, unsafe_allow_html=True)
+        
         st.success("🎉 **完全版**: 前月末勤務が正しく反映される月またぎ制約対応")
+        
+        # バージョン機能説明
+        with st.expander("🆕 v3.3 新機能", expanded=False):
+            st.markdown("""
+            **🔥 動的従業員管理システム**
+            - 📊 スライダーで従業員数調整（3-20名）
+            - 🏢 勤務場所数調整（2-10箇所）
+            - 🤖 自動名前生成（A-san, B-san...）
+            - ✏️ 名前編集機能
+            
+            **🚫 従業員制約マトリックス**
+            - 従業員別勤務場所制限
+            - チェックボックス式設定
+            - OR-Tools制約統合
+            
+            **🧪 ストレステスト機能**
+            - 高負荷テスト（最大20名×10箇所）
+            - パフォーマンス測定
+            - 制約限界テスト
+            """)
         
         # リセットボタンのみ表示
         col1, col2 = st.columns([1, 9])
@@ -2607,8 +2647,19 @@ def main():
         
         # フッター
         st.markdown("---")
-        st.markdown("💡 **完全版**: 前月末勤務情報を考慮した月またぎ制約が完璧に動作します")
-        st.markdown("🎯 **重要**: Aさんが31日B勤務 → 1日目は自動的に非番になります")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown("💡 **完全版**: 前月末勤務情報を考慮した月またぎ制約が完璧に動作します")
+            st.markdown("🎯 **重要**: Aさんが31日B勤務 → 1日目は自動的に非番になります")
+        with col2:
+            st.markdown(f"""
+            <div style='text-align: right; margin-top: 10px;'>
+                <span style='color: #666; font-size: 12px;'>
+                    System Version: {SYSTEM_VERSION}<br>
+                    Build: {SYSTEM_BUILD_DATE}
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
         
         # システム情報
         with st.expander("ℹ️ システム情報"):
@@ -2620,6 +2671,9 @@ def main():
             st.write("- ✅ **二徹・三徹防止**: 段階的制約緩和")
             st.write("- ✅ **Excel色分け出力**: 完全な色分け分析")
             st.write("- ✅ **リアルタイム制約チェック**: 前月末勤務の即座検証")
+            st.write("- 🆕 **動的従業員管理**: スライダー式スケール調整")
+            st.write("- 🆕 **従業員制約マトリックス**: 個別勤務場所制限")
+            st.write("- 🆕 **ストレステスト機能**: 高負荷・パフォーマンステスト")
             
             st.write("**色分け説明**:")
             st.write("- 🟡 **黄色**: 有休実現")

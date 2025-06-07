@@ -22,7 +22,7 @@
 """
 
 # =================== バージョン情報 ===================
-SYSTEM_VERSION = "v3.7"
+SYSTEM_VERSION = "v3.8"
 SYSTEM_BUILD_DATE = "2025-06-08"
 
 import streamlit as st
@@ -1289,7 +1289,11 @@ class CompleteGUI:
     """完全版GUI（月またぎ制約対応）"""
     
     def __init__(self):
-        self.location_manager = WorkLocationManager()
+        # WorkLocationManagerをsession stateで管理（Streamlit再実行で状態を維持）
+        if 'location_manager' not in st.session_state:
+            st.session_state.location_manager = WorkLocationManager()
+        self.location_manager = st.session_state.location_manager
+        
         self.engine = CompleteScheduleEngine(self.location_manager)
         self.excel_exporter = ExcelExporter(self.engine)
         
@@ -1341,7 +1345,7 @@ class CompleteGUI:
         st.success("🎉 **完全版**: 前月末勤務が正しく反映される月またぎ制約対応")
         
         # バージョン機能説明
-        with st.expander("🆕 v3.7 新機能", expanded=False):
+        with st.expander("🆕 v3.8 新機能", expanded=False):
             st.markdown("""
             **🔥 動的従業員管理システム（v3.3から）**
             - 📊 スライダーで従業員数調整（3-45名）
@@ -1383,13 +1387,26 @@ class CompleteGUI:
             - 💾 Session Stateバックアップシステム
             - 🔍 デバッグ表示で状態確認可能
             - ⚠️ 勤務場所未設定時の警告メッセージ
+            
+            **🏗️ v3.8 根本的修正**
+            - 💾 WorkLocationManagerをSession Stateで永続化
+            - 🔄 Streamlit再実行で状態を維持
+            - 🔧 リセット機能でSession Stateも同期
+            - ✅ 勤務場所変更の完全な反映を保証
             """)
         
         # リセットボタンのみ表示
         col1, col2 = st.columns([1, 9])
         with col1:
             if st.button("🔄 リセット", key="reset_button_config"):
+                # セッション状態の location_manager もリセット
                 self.location_manager.reset_to_default()
+                st.session_state.location_manager.reset_to_default()
+                # 関連する session state もクリア
+                if 'current_duty_locations' in st.session_state:
+                    del st.session_state.current_duty_locations
+                if 'current_duty_count' in st.session_state:
+                    del st.session_state.current_duty_count
                 st.success("デフォルト設定に戻しました")
                 st.rerun()
         
@@ -1969,9 +1986,6 @@ class CompleteGUI:
                 # 勤務場所も同時に更新
                 auto_locations = self._generate_duty_locations(duty_location_count)
                 self._update_location_manager(auto_locations)
-                # 更新を確実に反映させるためのフラグ
-                st.session_state.location_updated = True
-                st.session_state.update_timestamp = time.time()
                 st.success(f"✅ 従業員{employee_count}名・勤務場所{duty_location_count}箇所で生成しました")
                 st.rerun()
         
@@ -2568,10 +2582,17 @@ class CompleteGUI:
     
     def _update_location_manager(self, locations):
         """勤務場所マネージャーを更新"""
+        # インスタンスと session state 両方を更新
         self.location_manager.duty_locations = locations
-        # session stateにも保存して確実に反映
+        st.session_state.location_manager.duty_locations = locations
+        
+        # バックアップ用の session state も更新
         st.session_state.current_duty_locations = [loc["name"] for loc in locations]
         st.session_state.current_duty_count = len(locations)
+        
+        # 更新フラグをセット
+        st.session_state.location_updated = True
+        st.session_state.update_timestamp = time.time()
     
     def _create_employee_restriction_matrix(self):
         """従業員-勤務場所制約マトリックス作成"""

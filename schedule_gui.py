@@ -22,7 +22,7 @@
 """
 
 # =================== バージョン情報 ===================
-SYSTEM_VERSION = "v3.9-debug"
+SYSTEM_VERSION = "v3.10"
 SYSTEM_BUILD_DATE = "2025-06-08"
 
 import streamlit as st
@@ -389,14 +389,16 @@ class CompleteScheduleEngine:
         self.n_employees = len(employee_names)
         self.relief_employee_id = self.n_employees - 1
         
-        # 勤務場所設定
-        duty_locations = self.location_manager.get_duty_locations()
+        # 勤務場所設定（session stateから最新情報を取得）
+        import streamlit as st
+        current_location_manager = st.session_state.location_manager
+        duty_locations = current_location_manager.get_duty_locations()
         self.duty_names = [loc["name"] for loc in duty_locations]
         self.n_duties = len(self.duty_names)
         
         # シフト定義: 各勤務場所 + 休暇 + 非番
         # 非番は自動生成されるが、制約処理のために明示的なシフトとして扱う
-        self.shift_names = self.duty_names + [self.location_manager.holiday_type["name"]] + ["非番"]
+        self.shift_names = self.duty_names + [current_location_manager.holiday_type["name"]] + ["非番"]
         self.n_shifts = len(self.shift_names)
         self.OFF_SHIFT_ID = self.n_shifts - 1  # 最後が非番
         
@@ -1294,7 +1296,7 @@ class CompleteGUI:
             st.session_state.location_manager = WorkLocationManager()
         self.location_manager = st.session_state.location_manager
         
-        self.engine = CompleteScheduleEngine(self.location_manager)
+        self.engine = CompleteScheduleEngine(st.session_state.location_manager)
         self.excel_exporter = ExcelExporter(self.engine)
         
         # セッション状態初期化
@@ -1899,8 +1901,8 @@ class CompleteGUI:
         # session stateからも勤務場所を取得（バックアップ）
         session_duty_names = st.session_state.get('current_duty_locations', [])
         
-        # より確実な勤務場所リストを使用
-        display_duty_names = duty_names if duty_names else session_duty_names
+        # Session Stateを優先して使用（より確実）
+        display_duty_names = session_duty_names if session_duty_names else duty_names
         
         st.write("**現在の勤務場所:**")
         if len(display_duty_names) == 0:
@@ -1910,12 +1912,6 @@ class CompleteGUI:
             for i, name in enumerate(display_duty_names):
                 st.write(f"• {name}")
         
-        # デバッグ表示（詳細）
-        st.caption(f"🔧 Debug: manager={len(duty_names)}, session={len(session_duty_names)}, display={len(display_duty_names)}")
-        if duty_names:
-            st.caption(f"🔧 Manager locations: {duty_names}")
-        if session_duty_names:
-            st.caption(f"🔧 Session locations: {session_duty_names}")
         
         # 設定との差異を表示
         actual_count = len(display_duty_names)
@@ -1987,21 +1983,9 @@ class CompleteGUI:
                 st.session_state.last_employee_count = employee_count
                 st.session_state.last_duty_count = duty_location_count
                 
-                # デバッグ: 生成前の状態確認
-                before_count = len(self.location_manager.get_duty_names())
-                st.write(f"🔍 デバッグ: 生成前勤務場所数 = {before_count}")
-                
                 # 勤務場所も同時に更新
                 auto_locations = self._generate_duty_locations(duty_location_count)
-                st.write(f"🔍 デバッグ: 生成された勤務場所数 = {len(auto_locations)}")
-                st.write(f"🔍 デバッグ: 生成された勤務場所 = {[loc['name'] for loc in auto_locations]}")
-                
                 self._update_location_manager(auto_locations)
-                
-                # デバッグ: 更新後の状態確認
-                after_count = len(self.location_manager.get_duty_names())
-                st.write(f"🔍 デバッグ: 更新後勤務場所数 = {after_count}")
-                st.write(f"🔍 デバッグ: 更新後勤務場所 = {self.location_manager.get_duty_names()}")
                 
                 st.success(f"✅ 従業員{employee_count}名・勤務場所{duty_location_count}箇所で生成しました")
                 st.rerun()

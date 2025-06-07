@@ -22,7 +22,7 @@
 """
 
 # =================== バージョン情報 ===================
-SYSTEM_VERSION = "v3.6"
+SYSTEM_VERSION = "v3.7"
 SYSTEM_BUILD_DATE = "2025-06-08"
 
 import streamlit as st
@@ -1341,7 +1341,7 @@ class CompleteGUI:
         st.success("🎉 **完全版**: 前月末勤務が正しく反映される月またぎ制約対応")
         
         # バージョン機能説明
-        with st.expander("🆕 v3.6 新機能", expanded=False):
+        with st.expander("🆕 v3.7 新機能", expanded=False):
             st.markdown("""
             **🔥 動的従業員管理システム（v3.3から）**
             - 📊 スライダーで従業員数調整（3-45名）
@@ -1377,6 +1377,12 @@ class CompleteGUI:
             - 🔄 「自動生成」ボタンで従業員・勤務場所を同時更新
             - 💡 設定差異の視覚的表示（「自動生成で反映」ガイド）
             - ✅ 生成完了時の詳細メッセージ表示
+            
+            **🔧 v3.7 表示修正**
+            - 🔄 勤務場所の確実な反映メカニズム追加
+            - 💾 Session Stateバックアップシステム
+            - 🔍 デバッグ表示で状態確認可能
+            - ⚠️ 勤務場所未設定時の警告メッセージ
             """)
         
         # リセットボタンのみ表示
@@ -1865,18 +1871,43 @@ class CompleteGUI:
         st.markdown("---")
         
         # 現在の勤務場所表示
+        # 更新フラグをチェックして最新状態を確保
+        if st.session_state.get('location_updated', False):
+            # 更新されたばかりなので最新の情報を表示
+            st.session_state.location_updated = False
+        
         duty_names = self.location_manager.get_duty_names()
         current_duty_count = st.session_state.get('duty_location_count', 3)
         
+        # session stateからも勤務場所を取得（バックアップ）
+        session_duty_names = st.session_state.get('current_duty_locations', [])
+        
+        # より確実な勤務場所リストを使用
+        display_duty_names = duty_names if duty_names else session_duty_names
+        
         st.write("**現在の勤務場所:**")
-        for i, name in enumerate(duty_names):
-            st.write(f"• {name}")
+        if len(display_duty_names) == 0:
+            st.write("• 勤務場所が設定されていません")
+            st.warning("「自動生成」ボタンで勤務場所を生成してください")
+        else:
+            for i, name in enumerate(display_duty_names):
+                st.write(f"• {name}")
+        
+        # デバッグ表示（一時的）
+        if len(duty_names) != len(session_duty_names):
+            st.caption(f"🔧 Debug: manager={len(duty_names)}, session={len(session_duty_names)}")
         
         # 設定との差異を表示
-        if len(duty_names) != current_duty_count:
+        actual_count = len(display_duty_names)
+        if actual_count != current_duty_count:
             st.info(f"💡 スライダー設定: {current_duty_count}箇所 → 「自動生成」で反映")
         else:
             st.caption(f"設定数: {current_duty_count}箇所")
+        
+        # デバッグ情報（一時的）
+        if st.session_state.get('update_timestamp'):
+            last_update = st.session_state.update_timestamp
+            st.caption(f"最終更新: {time.strftime('%H:%M:%S', time.localtime(last_update))}")
         
         # 詳細設定ボタン（勤務場所の下に配置）
         if st.button("⚙️ 詳細設定", use_container_width=True, key="detailed_settings_button"):
@@ -1938,6 +1969,9 @@ class CompleteGUI:
                 # 勤務場所も同時に更新
                 auto_locations = self._generate_duty_locations(duty_location_count)
                 self._update_location_manager(auto_locations)
+                # 更新を確実に反映させるためのフラグ
+                st.session_state.location_updated = True
+                st.session_state.update_timestamp = time.time()
                 st.success(f"✅ 従業員{employee_count}名・勤務場所{duty_location_count}箇所で生成しました")
                 st.rerun()
         
@@ -2535,6 +2569,9 @@ class CompleteGUI:
     def _update_location_manager(self, locations):
         """勤務場所マネージャーを更新"""
         self.location_manager.duty_locations = locations
+        # session stateにも保存して確実に反映
+        st.session_state.current_duty_locations = [loc["name"] for loc in locations]
+        st.session_state.current_duty_count = len(locations)
     
     def _create_employee_restriction_matrix(self):
         """従業員-勤務場所制約マトリックス作成"""

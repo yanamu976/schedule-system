@@ -22,7 +22,7 @@
 """
 
 # =================== バージョン情報 ===================
-SYSTEM_VERSION = "v3.5"
+SYSTEM_VERSION = "v3.6"
 SYSTEM_BUILD_DATE = "2025-06-08"
 
 import streamlit as st
@@ -1341,7 +1341,7 @@ class CompleteGUI:
         st.success("🎉 **完全版**: 前月末勤務が正しく反映される月またぎ制約対応")
         
         # バージョン機能説明
-        with st.expander("🆕 v3.5 新機能", expanded=False):
+        with st.expander("🆕 v3.6 新機能", expanded=False):
             st.markdown("""
             **🔥 動的従業員管理システム（v3.3から）**
             - 📊 スライダーで従業員数調整（3-45名）
@@ -1371,6 +1371,12 @@ class CompleteGUI:
             - ⏰ 求解時間を3分上限に設定
             - 🎯 大規模データ最適化設定追加
             - ⚠️ 大規模配置時の警告表示
+            
+            **🎛️ v3.6 操作性改善**
+            - 🔧 勤務場所スライダーのリアルタイム更新を無効化
+            - 🔄 「自動生成」ボタンで従業員・勤務場所を同時更新
+            - 💡 設定差異の視覚的表示（「自動生成で反映」ガイド）
+            - ✅ 生成完了時の詳細メッセージ表示
             """)
         
         # リセットボタンのみ表示
@@ -1858,21 +1864,19 @@ class CompleteGUI:
         
         st.markdown("---")
         
-        # 現在の勤務場所表示（動的更新対応）
-        # スライダーで設定された勤務場所数に応じて動的に更新
-        current_duty_count = st.session_state.get('duty_location_count', 3)
-        if st.session_state.get('auto_generated', False) or current_duty_count != len(self.location_manager.get_duty_names()):
-            # 勤務場所数が変更された場合は自動更新
-            auto_locations = self._generate_duty_locations(current_duty_count)
-            self._update_location_manager(auto_locations)
-        
+        # 現在の勤務場所表示
         duty_names = self.location_manager.get_duty_names()
+        current_duty_count = st.session_state.get('duty_location_count', 3)
+        
         st.write("**現在の勤務場所:**")
         for i, name in enumerate(duty_names):
             st.write(f"• {name}")
         
-        # 勤務場所数の情報表示
-        st.caption(f"設定数: {current_duty_count}箇所")
+        # 設定との差異を表示
+        if len(duty_names) != current_duty_count:
+            st.info(f"💡 スライダー設定: {current_duty_count}箇所 → 「自動生成」で反映")
+        else:
+            st.caption(f"設定数: {current_duty_count}箇所")
         
         # 詳細設定ボタン（勤務場所の下に配置）
         if st.button("⚙️ 詳細設定", use_container_width=True, key="detailed_settings_button"):
@@ -1922,15 +1926,6 @@ class CompleteGUI:
             help="駅A、指令、警乗などの勤務場所数を設定します（最大15ポスト）"
         )
         
-        # 勤務場所数が変更されたかチェック
-        prev_duty_count = st.session_state.get('prev_duty_location_count', duty_location_count)
-        if prev_duty_count != duty_location_count:
-            # 勤務場所数が変更された場合、自動的に勤務場所を更新
-            auto_locations = self._generate_duty_locations(duty_location_count)
-            self._update_location_manager(auto_locations)
-            st.session_state.prev_duty_location_count = duty_location_count
-            st.success(f"✅ 勤務場所を{duty_location_count}箇所に更新しました")
-        
         st.session_state.duty_location_count = duty_location_count
         
         # 自動生成ボタン
@@ -1940,6 +1935,10 @@ class CompleteGUI:
                 st.session_state.auto_generated = True
                 st.session_state.last_employee_count = employee_count
                 st.session_state.last_duty_count = duty_location_count
+                # 勤務場所も同時に更新
+                auto_locations = self._generate_duty_locations(duty_location_count)
+                self._update_location_manager(auto_locations)
+                st.success(f"✅ 従業員{employee_count}名・勤務場所{duty_location_count}箇所で生成しました")
                 st.rerun()
         
         with col2:
@@ -1976,10 +1975,6 @@ class CompleteGUI:
                 edited_employees.append(edited_name.strip() if edited_name.strip() else name)
             
             new_employees = edited_employees
-            
-            # 自動生成された勤務場所
-            auto_locations = self._generate_duty_locations(duty_location_count)
-            self._update_location_manager(auto_locations)
             
         else:
             # 従来のテキストエリア方式（下位互換）
@@ -2726,6 +2721,7 @@ def main():
             st.write("- 🆕 **ストレステスト機能**: 高負荷・パフォーマンステスト")
             st.write("- ⚡ **リアルタイム勤務場所更新**: スライダー変更で即時反映")
             st.write("- 🚀 **大規模対応**: 最大45名×15ポスト（3分上限）")
+            st.write("- 🎛️ **操作性改善**: ボタン押下で反映（v3.6）")
             
             st.write("**色分け説明**:")
             st.write("- 🟡 **黄色**: 有休実現")

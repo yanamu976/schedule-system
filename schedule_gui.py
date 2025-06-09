@@ -22,7 +22,7 @@
 """
 
 # =================== バージョン情報 ===================
-SYSTEM_VERSION = "v3.10"
+SYSTEM_VERSION = "v3.14"
 SYSTEM_BUILD_DATE = "2025-06-08"
 
 import streamlit as st
@@ -626,20 +626,18 @@ class CompleteScheduleEngine:
                 duty_sum = sum(w[e, d, s] for s in range(self.n_duties))
                 model.Add(duty_flags[e, d] == duty_sum)
         
-        # 月内二徹制約
+        # 月内二徹制約（常に適用）
         nitetu_vars = []
-        if relax_level <= 2:
-            for e in range(self.n_employees):
-                for d in range(n_days - 2):
-                    nitetu_var = model.NewBoolVar(f"nitetu_{e}_{d}")
-                    model.Add(duty_flags[e, d] + duty_flags[e, d + 2] == 2).OnlyEnforceIf(nitetu_var)
-                    model.Add(duty_flags[e, d] + duty_flags[e, d + 2] <= 1).OnlyEnforceIf(nitetu_var.Not())
-                    nitetu_vars.append(nitetu_var)
-                
-                # 四徹以上の防止
-                if relax_level == 0:
-                    for d in range(n_days - 4):
-                        model.Add(duty_flags[e, d] + duty_flags[e, d + 2] + duty_flags[e, d + 4] <= 2)
+        for e in range(self.n_employees):
+            for d in range(n_days - 2):
+                nitetu_var = model.NewBoolVar(f"nitetu_{e}_{d}")
+                model.Add(duty_flags[e, d] + duty_flags[e, d + 2] == 2).OnlyEnforceIf(nitetu_var)
+                model.Add(duty_flags[e, d] + duty_flags[e, d + 2] <= 1).OnlyEnforceIf(nitetu_var.Not())
+                nitetu_vars.append(nitetu_var)
+            
+            # 四徹以上の防止（常に適用）
+            for d in range(n_days - 4):
+                model.Add(duty_flags[e, d] + duty_flags[e, d + 2] + duty_flags[e, d + 4] <= 2)
         
         # 二徹カウント変数
         nitetu_counts = []
@@ -1294,6 +1292,9 @@ class CompleteGUI:
         # WorkLocationManagerをsession stateで管理（Streamlit再実行で状態を維持）
         if 'location_manager' not in st.session_state:
             st.session_state.location_manager = WorkLocationManager()
+            # 初期設定を確実に読み込む
+            st.session_state.location_manager.load_config()
+        # 常に最新のsession stateを使用
         self.location_manager = st.session_state.location_manager
         
         self.engine = CompleteScheduleEngine(st.session_state.location_manager)
@@ -1520,6 +1521,19 @@ class CompleteGUI:
     
     def _main_page(self):
         """メインページ（ゲーミフィケーション対応）"""
+        
+        # 強制的にサイドバーを表示するデバッグボタン（緊急時用）
+        if st.button("🔧 サイドバー強制表示", key="force_show_sidebar"):
+            st.session_state.is_generating = False
+            st.session_state.show_gamification = False
+            st.rerun()
+        
+        # デバッグ情報（一時的）
+        if st.checkbox("🔍 デバッグ情報表示", key="show_debug_info"):
+            with st.expander("Session State情報"):
+                st.write(f"is_generating: {st.session_state.get('is_generating', 'Not set')}")
+                st.write(f"show_gamification: {st.session_state.get('show_gamification', 'Not set')}")
+                st.write(f"show_config: {st.session_state.get('show_config', 'Not set')}")
         
         # 生成中かつゲーミフィケーション有効時は完全にゲーム画面に切り替え
         if st.session_state.get('is_generating', False) and st.session_state.get('show_gamification', False):
@@ -2330,6 +2344,14 @@ class CompleteGUI:
         """通常の勤務表生成"""
         with st.spinner("勤務表を生成中..."):
             try:
+                # 勤務表生成前にスライダー設定値に合わせて勤務場所を更新
+                duty_location_count = st.session_state.get('duty_location_count', 3)
+                current_locations = self.location_manager.get_duty_names()
+                if len(current_locations) != duty_location_count:
+                    auto_locations = self._generate_duty_locations(duty_location_count)
+                    self._update_location_manager(auto_locations)
+                    st.info(f"🔄 勤務場所数を{duty_location_count}箇所に自動調整しました")
+                
                 result = self.engine.solve_schedule(
                     year=self.year,
                     month=self.month,

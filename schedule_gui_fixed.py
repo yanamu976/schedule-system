@@ -1454,6 +1454,15 @@ class CompleteGUI:
             layout="wide"
         )
         
+        # Initialize session state variables if not exists
+        if 'ui_mode' not in st.session_state:
+            st.session_state.ui_mode = 'basic'
+        if 'show_config' not in st.session_state:
+            st.session_state.show_config = False
+        if 'current_site' not in st.session_state:
+            available_sites = self.config_manager.get_available_sites()
+            st.session_state.current_site = available_sites[0] if available_sites else 'default'
+        
         # Phase 2: ヘッダー拡張
         col1, col2, col3 = st.columns([2, 1, 1])
         

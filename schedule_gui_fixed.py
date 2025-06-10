@@ -23,6 +23,325 @@ from ortools.sat.python import cp_model
 
 # =================== 勤務場所管理 ===================
 
+# =================== 設定管理 ===================
+
+class ConfigurationManager:
+    """設定管理クラス（Phase 2: 大人数対応・高度制約対応）"""
+    
+    def __init__(self):
+        self.configs_dir = "configs"
+        self.current_config = None
+        self.max_employees = 50  # Phase 2: 最大50人対応
+        
+        # デフォルト従業員設定（3人）
+        self.default_employee_preferences = {
+            "Aさん": {"駅A": 3, "指令": 2, "警乗": 0},
+            "Bさん": {"駅A": 3, "指令": 3, "警乗": 3},
+            "Cさん": {"駅A": 0, "指令": 0, "警乗": 3}
+        }
+        
+        # Phase 2: 高度制約テンプレート
+        self.employee_constraint_templates = {
+            "基本制約": {
+                "max_consecutive_days": 2,
+                "prohibited_days": [],
+                "required_rest_after": None,
+                "skill_level": {},
+                "weekly_hour_limit": 48,
+                "monthly_holiday_min": 8
+            },
+            "管理職制約": {
+                "max_consecutive_days": 3,
+                "prohibited_days": [],
+                "required_rest_after": None,
+                "skill_level": {"駅A": "上級", "指令": "上級", "警乗": "上級"},
+                "weekly_hour_limit": 60,
+                "monthly_holiday_min": 6
+            },
+            "新人制約": {
+                "max_consecutive_days": 1,
+                "prohibited_days": [],
+                "required_rest_after": "駅A",
+                "skill_level": {"駅A": "初級", "指令": "初級", "警乗": "初級"},
+                "weekly_hour_limit": 40,
+                "monthly_holiday_min": 10
+            }
+        }
+        
+        self.priority_weights = {0: 1000, 1: 10, 2: 5, 3: 0}
+        
+        # Phase 2: 複数現場対応
+        self.sites = {}  # 現場情報管理
+        self.current_site = None  # 現在選択中の現場
+    
+    def get_config_files(self):
+        """利用可能な設定ファイル一覧"""
+        import glob
+        import os
+        if not os.path.exists(self.configs_dir):
+            return []
+        pattern = os.path.join(self.configs_dir, "*.json")
+        files = glob.glob(pattern)
+        return [os.path.basename(f) for f in files]
+    
+    def load_config(self, filename):
+        """設定ファイル読み込み"""
+        try:
+            filepath = os.path.join(self.configs_dir, filename)
+            with open(filepath, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                self.current_config = config
+                return True, config
+        except Exception as e:
+            return False, str(e)
+    
+    def save_config(self, config_data, filename):
+        """設定ファイル保存"""
+        try:
+            os.makedirs(self.configs_dir, exist_ok=True)
+            filepath = os.path.join(self.configs_dir, filename)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, ensure_ascii=False, indent=2)
+            return True, None
+        except Exception as e:
+            return False, str(e)
+    
+    def get_employee_preferences(self):
+        """現在の従業員優先度設定取得"""
+        if self.current_config and "employee_preferences" in self.current_config:
+            return self.current_config["employee_preferences"]
+        return self.default_employee_preferences
+    
+    def update_employee_preferences(self, preferences):
+        """従業員優先度設定更新"""
+        if not self.current_config:
+            self.current_config = {
+                "config_name": "新規設定",
+                "created_date": datetime.now().strftime("%Y-%m-%d"),
+                "site_name": "現場",
+                "employee_preferences": {},
+                "priority_weights": self.priority_weights,
+                "description": "Phase 1設定"
+            }
+        self.current_config["employee_preferences"] = preferences
+    
+    def get_priority_penalty(self, employee_name, location_name, default_priority=2):
+        """優先度をペナルティ重みに変換"""
+        preferences = self.get_employee_preferences()
+        
+        if employee_name in preferences and location_name in preferences[employee_name]:
+            priority = preferences[employee_name][location_name]
+        else:
+            priority = default_priority
+        
+        return self.priority_weights.get(priority, self.priority_weights[2])
+    
+    # Phase 2: 大人数対応拡張メソッド
+    def add_employee(self, employee_name, preferences=None, constraints=None):
+        """従業員追加（最大50人まで）"""
+        current_prefs = self.get_employee_preferences()
+        if len(current_prefs) >= self.max_employees:
+            return False, f"最大従業員数({self.max_employees}人)に達しています"
+        
+        if employee_name in current_prefs:
+            return False, f"{employee_name}は既に存在します"
+        
+        # デフォルト優先度設定
+        if preferences is None:
+            preferences = {"駅A": 2, "指令": 2, "警乗": 2}
+        
+        current_prefs[employee_name] = preferences
+        
+        # 制約設定（Phase 2）
+        if constraints is None:
+            constraints = self.employee_constraint_templates["基本制約"].copy()
+        
+        if not self.current_config:
+            self.current_config = self._create_default_config()
+        
+        if "employee_constraints" not in self.current_config:
+            self.current_config["employee_constraints"] = {}
+        
+        self.current_config["employee_constraints"][employee_name] = constraints
+        self.update_employee_preferences(current_prefs)
+        
+        return True, None
+    
+    def remove_employee(self, employee_name):
+        """従業員削除"""
+        current_prefs = self.get_employee_preferences()
+        if employee_name not in current_prefs:
+            return False, f"{employee_name}が見つかりません"
+        
+        del current_prefs[employee_name]
+        
+        # 制約も削除
+        if (self.current_config and 
+            "employee_constraints" in self.current_config and 
+            employee_name in self.current_config["employee_constraints"]):
+            del self.current_config["employee_constraints"][employee_name]
+        
+        self.update_employee_preferences(current_prefs)
+        return True, None
+    
+    def get_employee_constraints(self, employee_name=None):
+        """従業員制約取得"""
+        if not self.current_config or "employee_constraints" not in self.current_config:
+            return {}
+        
+        if employee_name:
+            return self.current_config["employee_constraints"].get(
+                employee_name, self.employee_constraint_templates["基本制約"].copy()
+            )
+        
+        return self.current_config["employee_constraints"]
+    
+    def update_employee_constraints(self, employee_name, constraints):
+        """従業員制約更新"""
+        if not self.current_config:
+            self.current_config = self._create_default_config()
+        
+        if "employee_constraints" not in self.current_config:
+            self.current_config["employee_constraints"] = {}
+        
+        self.current_config["employee_constraints"][employee_name] = constraints
+    
+    def apply_constraint_template(self, employee_name, template_name):
+        """制約テンプレート適用"""
+        if template_name not in self.employee_constraint_templates:
+            return False, f"テンプレート'{template_name}'が見つかりません"
+        
+        template = self.employee_constraint_templates[template_name].copy()
+        self.update_employee_constraints(employee_name, template)
+        return True, None
+    
+    def _create_default_config(self):
+        """デフォルト設定作成"""
+        return {
+            "config_name": "新規設定",
+            "created_date": datetime.now().strftime("%Y-%m-%d"),
+            "site_name": "現場",
+            "employee_preferences": {},
+            "employee_constraints": {},
+            "priority_weights": self.priority_weights,
+            "description": "Phase 2設定",
+            "max_employees": self.max_employees
+        }
+    
+    # Phase 2: 複数現場対応メソッド
+    def get_available_sites(self):
+        """利用可能な現場一覧取得"""
+        # configs/フォルダから現場名を抽出
+        config_files = self.get_config_files()
+        sites = set()
+        
+        for filename in config_files:
+            try:
+                success, config = self.load_config(filename)
+                if success and 'site_name' in config:
+                    sites.add(config['site_name'])
+            except:
+                continue
+        
+        # デフォルト現場を追加
+        sites.add("本社現場")
+        return sorted(list(sites))
+    
+    def get_site_configs(self, site_name):
+        """特定現場の設定ファイル一覧取得"""
+        config_files = self.get_config_files()
+        site_configs = []
+        
+        for filename in config_files:
+            try:
+                success, config = self.load_config(filename)
+                if success and config.get('site_name') == site_name:
+                    site_configs.append({
+                        'filename': filename,
+                        'config_name': config.get('config_name', filename),
+                        'created_date': config.get('created_date', 'Unknown'),
+                        'description': config.get('description', '')
+                    })
+            except:
+                continue
+        
+        return site_configs
+    
+    def create_site_config(self, site_name, config_name, description=""):
+        """新しい現場設定作成"""
+        timestamp = datetime.now().strftime("%Y%m%d")
+        filename = f"{site_name}_{timestamp}.json"
+        
+        config = {
+            "config_name": config_name,
+            "created_date": datetime.now().strftime("%Y-%m-%d"),
+            "site_name": site_name,
+            "employee_preferences": self.default_employee_preferences.copy(),
+            "employee_constraints": {},
+            "priority_weights": self.priority_weights,
+            "description": description,
+            "max_employees": self.max_employees,
+            "site_specific_settings": {
+                "work_locations": ["駅A", "指令", "警乗"],
+                "shift_patterns": ["16h勤務"],
+                "special_rules": []
+            }
+        }
+        
+        success, error = self.save_config(config, filename)
+        if success:
+            self.current_config = config
+            return True, filename
+        else:
+            return False, error
+    
+    def switch_site(self, site_name):
+        """現場切り替え"""
+        self.current_site = site_name
+        # この現場の最新設定をロード
+        site_configs = self.get_site_configs(site_name)
+        if site_configs:
+            # 最新の設定をロード
+            latest_config = max(site_configs, key=lambda x: x['created_date'])
+            success, config = self.load_config(latest_config['filename'])
+            return success, config if success else None
+        else:
+            # 現場設定がない場合はデフォルト作成
+            return self.create_site_config(site_name, f"{site_name}_デフォルト")
+    
+    def get_current_site(self):
+        """現在の現場取得"""
+        if self.current_config and 'site_name' in self.current_config:
+            return self.current_config['site_name']
+        return "本社現場"
+    
+    def clone_site_config(self, source_site, target_site, new_config_name):
+        """現場設定のコピー作成"""
+        # ソース現場の設定を取得
+        source_configs = self.get_site_configs(source_site)
+        if not source_configs:
+            return False, f"ソース現場'{source_site}'の設定が見つかりません"
+        
+        latest_source = max(source_configs, key=lambda x: x['created_date'])
+        success, source_config = self.load_config(latest_source['filename'])
+        
+        if not success:
+            return False, f"ソース設定の読み込みに失敗: {source_config}"
+        
+        # ターゲット現場用に設定をコピー
+        target_config = source_config.copy()
+        target_config['config_name'] = new_config_name
+        target_config['site_name'] = target_site
+        target_config['created_date'] = datetime.now().strftime("%Y-%m-%d")
+        target_config['description'] = f"{source_site}からコピー"
+        
+        # 新しいファイル名で保存
+        timestamp = datetime.now().strftime("%Y%m%d")
+        filename = f"{target_site}_{timestamp}.json"
+        
+        return self.save_config(target_config, filename)
+
+
 class WorkLocationManager:
     """勤務場所管理クラス"""
     
@@ -104,28 +423,37 @@ class WorkLocationManager:
 class CompleteScheduleEngine:
     """完全版勤務表生成エンジン（月またぎ制約完全対応）"""
     
-    def __init__(self, location_manager):
+    def __init__(self, location_manager, config_manager=None):
         self.location_manager = location_manager
+        self.config_manager = config_manager
         
         # 非番シフトID（動的に設定）
         self.OFF_SHIFT_ID = None
         
-        # 重み設定
+        # Phase 2: 拡張重み設定
         self.weights = {
-            'RELIEF': 10,      # 助勤使用ペナルティ
-            'HOLIDAY': 50,     # 有休違反ペナルティ  
-            'NITETU': 15,      # 二徹ペナルティ
-            'N2_GAP': 30,      # 二徹格差ペナルティ
-            'PREF': 5,         # 希望違反ペナルティ
-            'CROSS_MONTH': 20  # 月またぎ二徹ペナルティ
+            'RELIEF': 10,           # 助勤使用ペナルティ
+            'HOLIDAY': 50,          # 有休違反ペナルティ  
+            'NITETU': 15,           # 二徹ペナルティ
+            'N2_GAP': 30,           # 二徹格差ペナルティ
+            'PREF': 5,              # 希望違反ペナルティ
+            'CROSS_MONTH': 20,      # 月またぎ二徹ペナルティ
+            # Phase 2: 高度制約ペナルティ
+            'CONSECUTIVE': 100,     # 連続勤務違反
+            'PROHIBITED_DAY': 200,  # 勤務禁止日違反
+            'SKILL_MISMATCH': 75,   # スキルミスマッチ
+            'HOUR_LIMIT': 50,       # 勤務時間限界違反
+            'REQUIRED_REST': 150    # 必須休み違反
         }
         
-        # 制約緩和メッセージ
+        # Phase 2: 拡張制約緩和メッセージ
         self.relax_messages = {
             0: "✅ 全制約満足",
             1: "⚠️ 二徹バランス緩和（格差許容）",
             2: "⚠️ 助勤フル解禁（ペナルティ低減）", 
-            3: "⚠️ 有休の一部を勤務変更（休多→勤務優先）"
+            3: "⚠️ 有休の一部を勤務変更（休多→勤務優先）",
+            4: "⚠️ 高度制約緩和（連続勤務・スキル制約緩和）",
+            5: "🚨 緊急モード（全制約大幅緩和）"
         }
     
     def update_weights(self, new_weights):
@@ -133,10 +461,16 @@ class CompleteScheduleEngine:
         self.weights.update(new_weights)
     
     def setup_system(self, employee_names):
-        """システム設定"""
+        """システム設定（Phase 2: 大人数対応）"""
         self.employees = employee_names
         self.n_employees = len(employee_names)
-        self.relief_employee_id = self.n_employees - 1
+        
+        # Phase 2: 大人数対応 - 助勤は最後の従業員ではなく専用として扱う
+        if self.n_employees > 10:
+            # 10人を超える場合は専用助勤を設定
+            self.relief_employee_id = None  # 専用助勤として処理
+        else:
+            self.relief_employee_id = self.n_employees - 1
         
         # 勤務場所設定
         duty_locations = self.location_manager.get_duty_locations()
@@ -159,13 +493,30 @@ class CompleteScheduleEngine:
         print(f"  勤務場所: {self.n_duties}箇所 - {self.duty_names}")
         print(f"  総シフト: {self.n_shifts}種類")
         print(f"  非番ID: {self.OFF_SHIFT_ID}")
+        
+        # Phase 2: 高度制約情報表示
+        if self.config_manager:
+            constraints_count = 0
+            for emp_name in self.employees:
+                emp_constraints = self.config_manager.get_employee_constraints(emp_name)
+                if emp_constraints:
+                    constraints_count += 1
+            print(f"  高度制約適用従業員: {constraints_count}名")
     
     def parse_requirements(self, requirement_lines, n_days):
-        """要求文の解析（改良版）"""
+        """要求文の解析（Phase 2: 高度制約対応）"""
         ng_constraints = defaultdict(list)
         preferences = {}
         holidays = set()
         debug_info = []
+        
+        # Phase 2: 高度制約情報収集
+        individual_constraints = {}
+        if self.config_manager:
+            for emp_name in self.employees:
+                emp_constraints = self.config_manager.get_employee_constraints(emp_name)
+                if emp_constraints:
+                    individual_constraints[emp_name] = emp_constraints
         
         day_pattern = re.compile(r'(\d{1,2})日')
         range_pattern = re.compile(r'(\d{1,2})日から(\d{1,2})日まで')
@@ -218,7 +569,16 @@ class CompleteScheduleEngine:
                                 preferences[(employee_id, day, duty_id)] = +self.weights['PREF']
                                 debug_info.append(f"✅ {employee_name}: {day+1}日の{duty_name}勤務回避追加")
         
-        return ng_constraints, preferences, holidays, debug_info
+        # Phase 2: 個人制約解析結果追加
+        if individual_constraints:
+            debug_info.append(f"🔧 高度制約適用: {len(individual_constraints)}名")
+            for emp_name, constraints in individual_constraints.items():
+                if constraints.get('prohibited_days'):
+                    debug_info.append(f"  {emp_name}: 勤務禁止日 {constraints['prohibited_days']}")
+                if constraints.get('max_consecutive_days', 2) != 2:
+                    debug_info.append(f"  {emp_name}: 最大連続{constraints['max_consecutive_days']}日")
+        
+        return ng_constraints, preferences, holidays, debug_info, individual_constraints
     
     def parse_previous_month_schedule(self, prev_schedule_data, prev_month_last_days=3):
         """
@@ -270,9 +630,13 @@ class CompleteScheduleEngine:
         return prev_duties, debug_info
     
     def build_optimization_model(self, n_days, ng_constraints, preferences, holidays, 
-                                relax_level=0, prev_duties=None):
-        """最適化モデル構築（月またぎ制約修正版）"""
+                                relax_level=0, prev_duties=None, individual_constraints=None):
+        """最適化モデル構築（Phase 2: 高度制約対応）"""
         model = cp_model.CpModel()
+        
+        # Phase 2: 個人制約のデフォルト値
+        if individual_constraints is None:
+            individual_constraints = {}
         
         # 決定変数: w[employee, day, shift]
         w = {}
@@ -307,6 +671,65 @@ class CompleteScheduleEngine:
         for e in range(self.n_employees):
             for d in range(n_days - 1):
                 model.Add(w[e, d, self.OFF_SHIFT_ID] + w[e, d + 1, self.OFF_SHIFT_ID] <= 1)
+        
+        # Phase 2: 高度個人制約適用
+        advanced_constraint_violations = []
+        
+        for emp_name, constraints in individual_constraints.items():
+            if emp_name not in self.name_to_id:
+                continue
+            
+            emp_id = self.name_to_id[emp_name]
+            
+            # 1. 連続勤務日数制約
+            max_consecutive = constraints.get('max_consecutive_days', 2)
+            if max_consecutive < 2:  # 1日連続のみ許可（新人等）
+                for d in range(n_days - 1):
+                    # 連続して勤務してはいけない
+                    duty_today = sum(w[emp_id, d, s] for s in range(self.n_duties))
+                    duty_tomorrow = sum(w[emp_id, d + 1, s] for s in range(self.n_duties))
+                    if relax_level < 4:
+                        model.Add(duty_today + duty_tomorrow <= 1)
+                    else:
+                        # 緩和モード: ペナルティとして処理
+                        violation_var = model.NewBoolVar(f"consecutive_violation_{emp_id}_{d}")
+                        model.Add(duty_today + duty_tomorrow >= 2).OnlyEnforceIf(violation_var)
+                        model.Add(duty_today + duty_tomorrow <= 1).OnlyEnforceIf(violation_var.Not())
+                        advanced_constraint_violations.append(violation_var)
+            
+            # 2. 勤務禁止日制約
+            prohibited_days = constraints.get('prohibited_days', [])
+            for day in prohibited_days:
+                if 1 <= day <= n_days:  # 1-indexedから0-indexedに変換
+                    day_idx = day - 1
+                    if relax_level < 4:
+                        # 全勤務を禁止
+                        for s in range(self.n_duties):
+                            model.Add(w[emp_id, day_idx, s] == 0)
+                    else:
+                        # 緩和モード: ペナルティとして処理
+                        violation_var = model.NewBoolVar(f"prohibited_day_violation_{emp_id}_{day}")
+                        duty_on_prohibited = sum(w[emp_id, day_idx, s] for s in range(self.n_duties))
+                        model.Add(duty_on_prohibited >= 1).OnlyEnforceIf(violation_var)
+                        model.Add(duty_on_prohibited == 0).OnlyEnforceIf(violation_var.Not())
+                        advanced_constraint_violations.append(violation_var)
+            
+            # 3. 特定勤務後の必須休み制約
+            required_rest_after = constraints.get('required_rest_after')
+            if required_rest_after and required_rest_after in self.duty_names:
+                rest_duty_id = self.duty_names.index(required_rest_after)
+                for d in range(n_days - 1):
+                    if relax_level < 4:
+                        # 特定勤務の翌日は絶対休み
+                        model.AddImplication(w[emp_id, d, rest_duty_id], w[emp_id, d + 1, self.OFF_SHIFT_ID])
+                    else:
+                        # 緩和モード: ペナルティとして処理
+                        violation_var = model.NewBoolVar(f"rest_violation_{emp_id}_{d}")
+                        next_day_duty = sum(w[emp_id, d + 1, s] for s in range(self.n_duties))
+                        # 特定勤務かつ翌日勤務の場合違反
+                        model.Add(w[emp_id, d, rest_duty_id] + next_day_duty >= 2).OnlyEnforceIf(violation_var)
+                        model.Add(w[emp_id, d, rest_duty_id] + next_day_duty <= 1).OnlyEnforceIf(violation_var.Not())
+                        advanced_constraint_violations.append(violation_var)
         
         # 🔥 月またぎ制約（完全修正版）
         cross_month_constraints = []
@@ -397,9 +820,11 @@ class CompleteScheduleEngine:
             model.AddMinEquality(nitetu_min, nitetu_counts)
             nitetu_gap = nitetu_max - nitetu_min
         
-        # 助勤制約
-        relief_work_vars = [w[self.relief_employee_id, d, s] 
-                           for d in range(n_days) for s in range(self.n_duties)]
+        # 助勤制約（Phase 2: 大人数対応）
+        relief_work_vars = []
+        if self.relief_employee_id is not None:
+            relief_work_vars = [w[self.relief_employee_id, d, s] 
+                               for d in range(n_days) for s in range(self.n_duties)]
         relief_weight = self.weights['RELIEF'] if relax_level < 2 else self.weights['RELIEF'] // 10
         
         # 有休制約
@@ -412,20 +837,58 @@ class CompleteScheduleEngine:
                 model.Add(w[emp_id, day, holiday_shift_id] == 1).OnlyEnforceIf(violation_var.Not())
                 holiday_violations.append(violation_var)
         
-        # 希望制約
+        # 希望制約（Phase 1: 優先度統合）
         preference_terms = []
+        priority_penalty_terms = []
+        
+        # 従来の希望制約
         if relax_level == 0:
             for (emp_id, day, shift), weight in preferences.items():
                 if 0 <= day < n_days and 0 <= shift < self.n_shifts:
                     preference_terms.append(weight * w[emp_id, day, shift])
         
-        # 目的関数
+        # Phase 1: 従業員優先度による重み付け
+        if self.config_manager:
+            for emp_id in range(self.n_employees):
+                emp_name = self.id_to_name[emp_id]
+                for day in range(n_days):
+                    for duty_id in range(self.n_duties):
+                        duty_name = self.duty_names[duty_id]
+                        penalty = self.config_manager.get_priority_penalty(emp_name, duty_name)
+                        if penalty > 0:  # ペナルティがある場合のみ追加
+                            priority_penalty_terms.append(penalty * w[emp_id, day, duty_id])
+        
+        # Phase 2: スキルミスマッチペナルティ計算
+        skill_mismatch_terms = []
+        if relax_level < 5:
+            for emp_name, constraints in individual_constraints.items():
+                if emp_name not in self.name_to_id:
+                    continue
+                emp_id = self.name_to_id[emp_name]
+                skill_levels = constraints.get('skill_level', {})
+                
+                for duty_name, skill_level in skill_levels.items():
+                    if duty_name in self.duty_names and skill_level == "初級":
+                        duty_id = self.duty_names.index(duty_name)
+                        for d in range(n_days):
+                            skill_mismatch_terms.append(
+                                self.weights['SKILL_MISMATCH'] * w[emp_id, d, duty_id]
+                            )
+        
+        # 目的関数（Phase 2: 高度制約ペナルティ追加）
         objective_terms = [
             relief_weight * sum(relief_work_vars),
             holiday_weight * sum(holiday_violations),
             self.weights['NITETU'] * sum(nitetu_vars),
-            self.weights['CROSS_MONTH'] * sum(cross_month_nitetu_vars)
+            self.weights['CROSS_MONTH'] * sum(cross_month_nitetu_vars),
+            # Phase 2: 高度制約ペナルティ
+            self.weights['CONSECUTIVE'] * sum(advanced_constraint_violations),
+            sum(skill_mismatch_terms)
         ]
+        
+        # Phase 1: 優先度ペナルティ項目を追加
+        if priority_penalty_terms:
+            objective_terms.append(sum(priority_penalty_terms))
         
         if nitetu_gap != 0:
             objective_terms.append(self.weights['N2_GAP'] * nitetu_gap)
@@ -433,14 +896,18 @@ class CompleteScheduleEngine:
         objective_terms.extend(preference_terms)
         model.Minimize(sum(objective_terms))
         
-        return model, w, nitetu_counts, cross_month_constraints
+        return model, w, nitetu_counts, cross_month_constraints, advanced_constraint_violations
     
-    def solve_with_relaxation(self, n_days, ng_constraints, preferences, holidays, prev_duties=None):
-        """段階的制約緩和による求解"""
+    def solve_with_relaxation(self, n_days, ng_constraints, preferences, holidays, prev_duties=None, individual_constraints=None):
+        """段階的制約緩和による求解（Phase 2: 高度制約対応）"""
         relax_notes = []
         cross_constraints = []
+        advanced_violations = []
         
-        for relax_level in range(4):
+        # Phase 2: 高度制約ありの場合は緩和レベルを拡張
+        max_relax_level = 6 if individual_constraints else 4
+        
+        for relax_level in range(max_relax_level):
             # レベル3では有休を削減
             holidays_to_use = holidays
             if relax_level == 3:
@@ -448,11 +915,12 @@ class CompleteScheduleEngine:
                 if reduction_note:
                     relax_notes.append(reduction_note)
             
-            # モデル構築
-            model, w, nitetu_counts, cross_const = self.build_optimization_model(
-                n_days, ng_constraints, preferences, holidays_to_use, relax_level, prev_duties
+            # モデル構築（Phase 2: 個人制約付き）
+            model, w, nitetu_counts, cross_const, adv_violations = self.build_optimization_model(
+                n_days, ng_constraints, preferences, holidays_to_use, relax_level, prev_duties, individual_constraints
             )
             cross_constraints = cross_const
+            advanced_violations = adv_violations
             
             # 求解
             solver = cp_model.CpSolver()
@@ -460,12 +928,12 @@ class CompleteScheduleEngine:
             status = solver.Solve(model)
             
             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-                return relax_level, status, solver, w, nitetu_counts, relax_notes, cross_constraints
+                return relax_level, status, solver, w, nitetu_counts, relax_notes, cross_constraints, advanced_violations
             
             relax_notes.append(self.relax_messages[relax_level])
         
         # すべてのレベルで解けない場合
-        return 99, cp_model.INFEASIBLE, None, None, None, relax_notes, cross_constraints
+        return 99, cp_model.INFEASIBLE, None, None, None, relax_notes, cross_constraints, advanced_violations
     
     def reduce_holidays(self, holidays, max_remove=2):
         """有休削減（最も多い人から削減）"""
@@ -948,7 +1416,8 @@ class CompleteGUI:
     
     def __init__(self):
         self.location_manager = WorkLocationManager()
-        self.engine = CompleteScheduleEngine(self.location_manager)
+        self.config_manager = ConfigurationManager()
+        self.engine = CompleteScheduleEngine(self.location_manager, self.config_manager)
         self.excel_exporter = ExcelExporter(self.engine)
         
         # セッション状態初期化
@@ -959,12 +1428,20 @@ class CompleteGUI:
         
         # 設定読み込み
         self.location_manager.load_config()
+        
+        # Phase 1: デフォルト設定読み込み
+        default_files = self.config_manager.get_config_files()
+        if "default.json" in default_files:
+            self.config_manager.load_config("default.json")
     
     def run(self):
-        """メイン実行"""
+        """メイン実行（Phase 2: アコーディオンUI）"""
         self._setup_page()
         
-        if st.session_state.show_config:
+        # Phase 2: 高度ナビゲーション
+        if st.session_state.ui_mode == 'advanced':
+            self._advanced_accordion_ui()
+        elif st.session_state.show_config:
             self._configuration_page()
         else:
             self._main_page()
@@ -977,28 +1454,420 @@ class CompleteGUI:
             layout="wide"
         )
         
-        st.title("📅 勤務表システム（修正版）")
-        st.success("🎉 **修正版**: シンプル・安定動作版")
+        # Phase 2: ヘッダー拡張
+        col1, col2, col3 = st.columns([2, 1, 1])
         
-        # リセットボタンのみ表示
-        col1, col2 = st.columns([1, 9])
+        with col1:
+            st.title("🎆 勤務表システム Phase 2")
+            
+        with col2:
+            # UIモード切り替え
+            ui_mode = st.selectbox(
+                "🎨 UIモード",
+                options=['basic', 'advanced'],
+                format_func=lambda x: '🔰 シンプル' if x == 'basic' else '🎆 高度',
+                index=0 if st.session_state.ui_mode == 'basic' else 1
+            )
+            if ui_mode != st.session_state.ui_mode:
+                st.session_state.ui_mode = ui_mode
+                st.rerun()
+        
+        with col3:
+            # 現場切り替え
+            available_sites = self.config_manager.get_available_sites()
+            current_site = st.selectbox(
+                "🏢 現場選択",
+                options=available_sites,
+                index=available_sites.index(st.session_state.current_site) if st.session_state.current_site in available_sites else 0
+            )
+            if current_site != st.session_state.current_site:
+                st.session_state.current_site = current_site
+                self.config_manager.switch_site(current_site)
+                st.rerun()
+        
+        # Phase 2: 機能ステータス表示
+        if st.session_state.ui_mode == 'advanced':
+            st.info("🎆 **Phase 2 高度モード**: 大人数対応・高度制約・複数現場対応")
+        else:
+            st.success("🔰 **シンプルモード**: Phase 1互換機能")
+        
+        # リセットボタンとコントロール
+        col1, col2, col3 = st.columns([1, 7, 2])
         with col1:
             if st.button("🔄 リセット"):
-                self.location_manager.reset_to_default()
-                st.success("デフォルト設定に戻しました")
+                for key in list(st.session_state.keys()):
+                    if key not in ['show_config', 'ui_mode', 'current_site']:
+                        del st.session_state[key]
                 st.rerun()
+        
+        with col3:
+            # Phase 2: クイックアクション
+            if st.session_state.ui_mode == 'advanced':
+                if st.button("⚙️ 設定"):
+                    st.session_state.show_config = True
+                    st.rerun()
+            else:
+                if st.button("⚙️ 詳細設定"):
+                    st.session_state.show_config = True
+                    st.rerun()
         
         st.markdown("---")
     
+    def _advanced_accordion_ui(self):
+        """高度アコーディオン式UI（Phase 2）"""
+        st.markdown("### 🎆 Phase 2 高度モード")
+        
+        # メインアコーディオンセクション
+        with st.expander("👥 従業員管理 & 大人数対応", expanded=st.session_state.expanded_sections.get('employees', False)):
+            self._employee_management_section()
+        
+        with st.expander("🏢 現場管理 & 設定", expanded=st.session_state.expanded_sections.get('sites', False)):
+            self._site_management_section()
+        
+        with st.expander("⚙️ 高度個人制約設定", expanded=st.session_state.expanded_sections.get('constraints', False)):
+            self._advanced_constraints_section()
+        
+        with st.expander("📅 スケジュール生成", expanded=st.session_state.expanded_sections.get('schedule', True)):
+            self._schedule_generation_section()
+        
+        with st.expander("📈 分析 & レポート", expanded=st.session_state.expanded_sections.get('analysis', False)):
+            self._analysis_section()
+    
+    def _employee_management_section(self):
+        """従業員管理セクション（Phase 2）"""
+        st.markdown("#### 👥 従業員管理（最大50人対応）")
+        
+        current_prefs = self.config_manager.get_employee_preferences()
+        employee_list = list(current_prefs.keys())
+        
+        # 現在の従業員数表示
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("登録従業員数", len(employee_list))
+        with col2:
+            st.metric("最大対応数", self.config_manager.max_employees)
+        with col3:
+            remaining = self.config_manager.max_employees - len(employee_list)
+            st.metric("追加可能数", remaining)
+        
+        # 従業員追加
+        st.markdown("**新しい従業員を追加**")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            new_emp_name = st.text_input("従業員名", key="new_employee_name")
+        
+        with col2:
+            constraint_template = st.selectbox(
+                "制約テンプレート",
+                options=list(self.config_manager.employee_constraint_templates.keys()),
+                key="new_emp_constraint_template"
+            )
+        
+        if st.button("➕ 従業員追加") and new_emp_name.strip():
+            success, error = self.config_manager.add_employee(
+                new_emp_name.strip(),
+                constraints=self.config_manager.employee_constraint_templates[constraint_template].copy()
+            )
+            if success:
+                st.success(f"✅ {new_emp_name}を追加しました")
+                st.rerun()
+            else:
+                st.error(f"❌ エラー: {error}")
+        
+        # 従業員一覧と管理
+        if employee_list:
+            st.markdown("**現在の従業員一覧**")
+            
+            for emp_name in employee_list:
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    
+                    with col1:
+                        st.write(f"👤 **{emp_name}**")
+                        # 制約情報表示
+                        constraints = self.config_manager.get_employee_constraints(emp_name)
+                        if constraints:
+                            st.caption(f"連続勤務上限: {constraints.get('max_consecutive_days', 2)}日")
+                    
+                    with col2:
+                        if st.button("✏️ 編集", key=f"edit_{emp_name}"):
+                            st.session_state[f"editing_{emp_name}"] = True
+                    
+                    with col3:
+                        if st.button("🗑️ 削除", key=f"delete_{emp_name}"):
+                            success, error = self.config_manager.remove_employee(emp_name)
+                            if success:
+                                st.success(f"✅ {emp_name}を削除しました")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ エラー: {error}")
+                    
+                    # 編集モード
+                    if st.session_state.get(f"editing_{emp_name}", False):
+                        self._edit_employee_section(emp_name)
+                    
+                    st.markdown("---")
+    
+    def _edit_employee_section(self, emp_name):
+        """従業員編集セクション"""
+        st.markdown(f"#### ✏️ {emp_name} の設定編集")
+        
+        # 優先度設定
+        st.markdown("**優先度設定**")
+        current_prefs = self.config_manager.get_employee_preferences()
+        emp_prefs = current_prefs.get(emp_name, {})
+        
+        duty_names = self.location_manager.get_duty_names()
+        new_prefs = {}
+        
+        cols = st.columns(len(duty_names))
+        for i, duty_name in enumerate(duty_names):
+            with cols[i]:
+                current_value = emp_prefs.get(duty_name, 2)
+                priority = st.selectbox(
+                    f"{duty_name}",
+                    options=[0, 1, 2, 3],
+                    index=[0, 1, 2, 3].index(current_value),
+                    format_func=lambda x: f"{x} - {['❌不可', '🟠可能', '🟡普通', '🌟最優先'][x]}",
+                    key=f"edit_pref_{emp_name}_{duty_name}"
+                )
+                new_prefs[duty_name] = priority
+        
+        # 高度制約設定
+        st.markdown("**高度制約設定**")
+        constraints = self.config_manager.get_employee_constraints(emp_name)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            max_consecutive = st.number_input(
+                "最大連続勤務日数",
+                min_value=1, max_value=5,
+                value=constraints.get('max_consecutive_days', 2),
+                key=f"edit_consecutive_{emp_name}"
+            )
+        
+        with col2:
+            prohibited_days_input = st.text_input(
+                "勤務禁止日 (カンマ区切り)",
+                value=",".join(map(str, constraints.get('prohibited_days', []))),
+                key=f"edit_prohibited_{emp_name}"
+            )
+        
+        # スキルレベル設定
+        st.markdown("**スキルレベル設定**")
+        skill_levels = constraints.get('skill_level', {})
+        new_skills = {}
+        
+        cols = st.columns(len(duty_names))
+        for i, duty_name in enumerate(duty_names):
+            with cols[i]:
+                current_skill = skill_levels.get(duty_name, "中級")
+                skill = st.selectbox(
+                    f"{duty_name} スキル",
+                    options=["初級", "中級", "上級"],
+                    index=["初級", "中級", "上級"].index(current_skill),
+                    key=f"edit_skill_{emp_name}_{duty_name}"
+                )
+                new_skills[duty_name] = skill
+        
+        # 保存・キャンセル
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 保存", key=f"save_{emp_name}"):
+                # 優先度更新
+                current_prefs[emp_name] = new_prefs
+                self.config_manager.update_employee_preferences(current_prefs)
+                
+                # 制約更新
+                prohibited_days = []
+                if prohibited_days_input.strip():
+                    try:
+                        prohibited_days = [int(x.strip()) for x in prohibited_days_input.split(',') if x.strip()]
+                    except:
+                        st.error("禁止日の形式が正しくありません")
+                        return
+                
+                new_constraints = {
+                    'max_consecutive_days': max_consecutive,
+                    'prohibited_days': prohibited_days,
+                    'required_rest_after': constraints.get('required_rest_after'),
+                    'skill_level': new_skills,
+                    'weekly_hour_limit': constraints.get('weekly_hour_limit', 48),
+                    'monthly_holiday_min': constraints.get('monthly_holiday_min', 8)
+                }
+                
+                self.config_manager.update_employee_constraints(emp_name, new_constraints)
+                st.success(f"✅ {emp_name}の設定を更新しました")
+                del st.session_state[f"editing_{emp_name}"]
+                st.rerun()
+        
+        with col2:
+            if st.button("❌ キャンセル", key=f"cancel_{emp_name}"):
+                del st.session_state[f"editing_{emp_name}"]
+                st.rerun()
+    
+    def _site_management_section(self):
+        """現場管理セクション（Phase 2）"""
+        st.markdown("#### 🏢 現場管理")
+        
+        # 現在の現場情報
+        current_site = self.config_manager.get_current_site()
+        st.info(f"🏢 現在の現場: **{current_site}**")
+        
+        # 新しい現場作成
+        st.markdown("**新しい現場作成**")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            new_site_name = st.text_input("現場名", key="new_site_name")
+        
+        with col2:
+            new_site_desc = st.text_input("説明", key="new_site_desc")
+        
+        if st.button("➕ 現場作成") and new_site_name.strip():
+            success, filename = self.config_manager.create_site_config(
+                new_site_name.strip(),
+                f"{new_site_name.strip()}_初期設定",
+                new_site_desc
+            )
+            if success:
+                st.success(f"✅ 現場 '{new_site_name}' を作成しました")
+                st.session_state.current_site = new_site_name.strip()
+                st.rerun()
+            else:
+                st.error(f"❌ エラー: {filename}")
+        
+        # 現場コピー
+        st.markdown("**現場設定コピー**")
+        available_sites = self.config_manager.get_available_sites()
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            source_site = st.selectbox("コピー元現場", available_sites, key="copy_source_site")
+        
+        with col2:
+            target_site = st.text_input("コピー先現場名", key="copy_target_site")
+        
+        with col3:
+            if st.button("📋 コピー") and target_site.strip():
+                success, error = self.config_manager.clone_site_config(
+                    source_site, target_site.strip(), f"{target_site.strip()}_コピー"
+                )
+                if success:
+                    st.success(f"✅ 現場設定をコピーしました")
+                    st.rerun()
+                else:
+                    st.error(f"❌ エラー: {error}")
+    
+    def _advanced_constraints_section(self):
+        """高度制約設定セクション（Phase 2）"""
+        st.markdown("#### ⚙️ 高度制約設定")
+        
+        # 制約テンプレート管理
+        st.markdown("**制約テンプレート**")
+        
+        templates = self.config_manager.employee_constraint_templates
+        selected_template = st.selectbox(
+            "テンプレート選択",
+            options=list(templates.keys()),
+            key="constraint_template_select"
+        )
+        
+        if selected_template:
+            template_data = templates[selected_template]
+            st.json(template_data)
+        
+        # 一括適用
+        st.markdown("**一括テンプレート適用**")
+        current_employees = list(self.config_manager.get_employee_preferences().keys())
+        
+        selected_employees = st.multiselect(
+            "適用対象従業員",
+            options=current_employees,
+            key="bulk_apply_employees"
+        )
+        
+        if st.button("⚙️ 一括適用") and selected_employees:
+            for emp_name in selected_employees:
+                success, error = self.config_manager.apply_constraint_template(emp_name, selected_template)
+                if not success:
+                    st.error(f"❌ {emp_name}: {error}")
+            
+            st.success(f"✅ {len(selected_employees)}名にテンプレートを適用しました")
+            st.rerun()
+    
+    def _schedule_generation_section(self):
+        """スケジュール生成セクション（Phase 2）"""
+        st.markdown("#### 📅 スケジュール生成")
+        
+        # 既存のメインページ機能を組み込み
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            self._create_calendar_input()
+        
+        with col2:
+            self._create_control_panel()
+    
+    def _analysis_section(self):
+        """分析レポートセクション（Phase 2）"""
+        st.markdown("#### 📈 分析 & レポート")
+        
+        # 現在の設定統計
+        current_prefs = self.config_manager.get_employee_preferences()
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("登録従業員数", len(current_prefs))
+        
+        with col2:
+            constraints_count = 0
+            for emp_name in current_prefs.keys():
+                if self.config_manager.get_employee_constraints(emp_name):
+                    constraints_count += 1
+            st.metric("高度制約適用者", constraints_count)
+        
+        with col3:
+            current_site = self.config_manager.get_current_site()
+            site_configs = self.config_manager.get_site_configs(current_site)
+            st.metric(f"{current_site} 設定数", len(site_configs))
+        
+        # 設定データエクスポート
+        if st.button("📥 現在の設定をエクスポート"):
+            if self.config_manager.current_config:
+                config_json = json.dumps(self.config_manager.current_config, ensure_ascii=False, indent=2)
+                st.download_button(
+                    "📥 JSONファイルダウンロード",
+                    data=config_json.encode('utf-8'),
+                    file_name=f"{current_site}_設定_{datetime.now().strftime('%Y%m%d')}.json",
+                    mime="application/json"
+                )
+            else:
+                st.error("エクスポートする設定がありません")
+    
     def _configuration_page(self):
-        """設定ページ（修正版）"""
+        """設定ページ（Phase 1: 優先度設定対応）"""
         st.header("⚙️ 詳細設定")
         
         # 戻るボタン
         if st.button("← メインページに戻る"):
             st.session_state.show_config = False
+            if 'new_config_mode' in st.session_state:
+                del st.session_state.new_config_mode
             st.rerun()
         
+        # Phase 1: タブ切り替え
+        tab1, tab2 = st.tabs(["🏢 勤務場所設定", "👥 優先度設定 (Phase 1)"])
+        
+        with tab1:
+            self._create_location_settings_tab()
+        
+        with tab2:
+            self._create_preference_settings_tab()
+    
+    def _create_location_settings_tab(self):
+        """勤務場所設定タブ"""
         st.subheader("勤務場所設定")
         st.info(f"現在の勤務場所数: {len(self.location_manager.duty_locations)} / 15（最大）")
         
@@ -1090,9 +1959,121 @@ class CompleteGUI:
             st.warning("⚠️ 最大15勤務場所まで追加できます")
         
         # 保存ボタン
-        if st.button("💾 設定を保存", type="primary"):
+        if st.button("💾 勤務場所設定を保存", type="primary"):
             self.location_manager.save_config()
-            st.success("✅ 設定を保存しました")
+            st.success("✅ 勤務場所設定を保存しました")
+    
+    def _create_preference_settings_tab(self):
+        """優先度設定タブ（Phase 1）"""
+        st.subheader("👥 従業員優先度設定 (Phase 1)")
+        st.info("🎡 3人分（Aさん、Bさん、Cさん）の優先度設定")
+        
+        # 現在の設定表示
+        current_prefs = self.config_manager.get_employee_preferences()
+        duty_names = self.location_manager.get_duty_names()
+        
+        st.write("📋 **優先度レベル**:")
+        st.write("- 3: 🌟 最優先 (ペナルティ 0)")
+        st.write("- 2: 🟡 普通 (ペナルティ 5)")
+        st.write("- 1: 🟠 可能 (ペナルティ 10)")
+        st.write("- 0: ❌ 不可 (ペナルティ 1000)")
+        
+        st.markdown("---")
+        
+        # 3人の優先度設定エリア
+        employees = ["Aさん", "Bさん", "Cさん"]
+        new_preferences = {}
+        
+        for emp in employees:
+            st.write(f"**{emp} の優先度設定**")
+            
+            emp_prefs = {}
+            cols = st.columns(len(duty_names))
+            
+            for i, duty_name in enumerate(duty_names):
+                current_value = current_prefs.get(emp, {}).get(duty_name, 2)
+                
+                with cols[i]:
+                    priority = st.selectbox(
+                        f"{duty_name}",
+                        options=[0, 1, 2, 3],
+                        index=[0, 1, 2, 3].index(current_value),
+                        format_func=lambda x: f"{x} - {['❌不可', '🟠可能', '🟡普通', '🌟最優先'][x]}",
+                        key=f"pref_{emp}_{duty_name}"
+                    )
+                    emp_prefs[duty_name] = priority
+            
+            new_preferences[emp] = emp_prefs
+            st.markdown("---")
+        
+        # 現在の設定との変更チェック
+        if new_preferences != current_prefs:
+            st.warning("⚠️ 設定が変更されています。保存してください。")
+            self.config_manager.update_employee_preferences(new_preferences)
+        
+        # 保存機能
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # 既存ファイル更新
+            if st.button("💾 現在の設定を更新", type="primary"):
+                if self.config_manager.current_config:
+                    filename = st.session_state.get('last_config_file', 'default.json')
+                    success, error = self.config_manager.save_config(self.config_manager.current_config, filename)
+                    if success:
+                        st.success(f"✅ {filename} を更新しました")
+                    else:
+                        st.error(f"❌ 保存エラー: {error}")
+                else:
+                    st.error("保存する設定がありません")
+        
+        with col2:
+            # 新規保存
+            new_filename = st.text_input(
+                "新規ファイル名",
+                value=f"としかず現場_{datetime.now().strftime('%Y%m%d')}.json",
+                key="new_config_filename"
+            )
+            
+            if st.button("🆕 新規保存"):
+                if new_filename.strip():
+                    if not new_filename.endswith('.json'):
+                        new_filename += '.json'
+                    
+                    # 新規設定作成
+                    if not self.config_manager.current_config:
+                        self.config_manager.update_employee_preferences(new_preferences)
+                    
+                    # メタデータ更新
+                    self.config_manager.current_config.update({
+                        "config_name": new_filename.replace('.json', ''),
+                        "created_date": datetime.now().strftime("%Y-%m-%d"),
+                        "site_name": "としかず現場",
+                        "description": "Phase 1: 3人分優先度設定"
+                    })
+                    
+                    success, error = self.config_manager.save_config(self.config_manager.current_config, new_filename)
+                    if success:
+                        st.success(f"✅ {new_filename} で保存しました")
+                        st.session_state.last_config_file = new_filename
+                    else:
+                        st.error(f"❌ 保存エラー: {error}")
+                else:
+                    st.error("ファイル名を入力してください")
+        
+        # 設定プレビュー
+        with st.expander("🔍 現在の設定プレビュー"):
+            st.json(new_preferences)
+        
+        # ダウンロード機能
+        if self.config_manager.current_config:
+            config_json = json.dumps(self.config_manager.current_config, ensure_ascii=False, indent=2)
+            st.download_button(
+                "📎 JSONファイルをダウンロード",
+                data=config_json.encode('utf-8'),
+                file_name=f"優先度設定_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json"
+            )
     
     def _main_page(self):
         """メインページ"""
@@ -1110,7 +2091,43 @@ class CompleteGUI:
             self._create_control_panel()
     
     def _create_sidebar(self):
-        """サイドバー（レイアウト改善版）"""
+        """サイドバー（Phase 1: 設定選択対応）"""
+        # Phase 1: 設定ファイル選択
+        st.header("📁 設定選択")
+        
+        config_files = self.config_manager.get_config_files()
+        if config_files:
+            selected_config = st.selectbox(
+                "設定ファイル",
+                config_files,
+                index=config_files.index("default.json") if "default.json" in config_files else 0,
+                key="config_file_select"
+            )
+            
+            # 設定変更時の読み込み
+            if st.session_state.get('last_config_file') != selected_config:
+                success, result = self.config_manager.load_config(selected_config)
+                if success:
+                    st.success(f"✅ {selected_config} を読み込みました")
+                    st.session_state.last_config_file = selected_config
+                else:
+                    st.error(f"❌ 読み込みエラー: {result}")
+            
+            # 現在の設定情報表示
+            if self.config_manager.current_config:
+                config = self.config_manager.current_config
+                st.info(f"🏢 {config.get('site_name', '現場名不明')}")
+                st.info(f"📅 {config.get('created_date', '日付不明')}")
+                
+                # 優先度設定数表示
+                prefs = config.get('employee_preferences', {})
+                if prefs:
+                    st.write(f"👥 設定済み従業員: {len(prefs)}名")
+        else:
+            st.warning("⚠️ 設定ファイルがありません")
+        
+        st.markdown("---")
+        
         st.header("📋 基本設定")
         
         # 年月設定（最優先）
@@ -1133,6 +2150,13 @@ class CompleteGUI:
         
         # 詳細設定ボタン（勤務場所の下に配置）
         if st.button("⚙️ 詳細設定", use_container_width=True):
+            st.session_state.show_config = True
+            st.rerun()
+        
+        # Phase 1: 新規設定作成ボタン
+        if st.button("🆕 新規設定作成", use_container_width=True):
+            # 新規設定モードに切り替え
+            st.session_state.new_config_mode = True
             st.session_state.show_config = True
             st.rerun()
         

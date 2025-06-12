@@ -368,7 +368,7 @@ class ConstraintDiagnostics:
         
         # 1. 基本的な人員不足チェック
         required_positions_per_day = n_duties
-        available_employees = n_employees - 1  # 助勤を除く
+        available_employees = n_employees  # 全員が正規隊員
         coverage_ratio = available_employees / required_positions_per_day if required_positions_per_day > 0 else 0
         
         if coverage_ratio < 1.0:
@@ -376,7 +376,7 @@ class ConstraintDiagnostics:
                 "type": "人員不足",
                 "severity": "critical",
                 "message": f"深刻な人員不足: {required_positions_per_day}箇所の勤務場所に対して{available_employees}名しかいません",
-                "suggestion": f"最低{required_positions_per_day + 1}名（助勤含む）が必要です"
+                "suggestion": f"最低{required_positions_per_day * 3}名が推奨です（勤務場所数 x 3）"
             })
         elif coverage_ratio < 1.5:
             warnings.append({
@@ -559,7 +559,8 @@ class CompleteScheduleEngine:
         """システム設定"""
         self.employees = employee_names
         self.n_employees = len(employee_names)
-        self.relief_employee_id = self.n_employees - 1
+        # 助勤システムを無効化（全員が正規隊員）
+        self.relief_employee_id = None  # 助勤なし
         
         # 勤務場所設定（session stateから最新情報を取得）
         import streamlit as st
@@ -711,10 +712,15 @@ class CompleteScheduleEngine:
             for d in range(n_days):
                 model.AddExactlyOne(w[e, d, s] for s in range(self.n_shifts))
         
-        # 基本制約2: 各勤務場所は1日1人
+        # 基本制約2: 各勤務場所は1日1人（緩和モード対応）
         for d in range(n_days):
             for s in range(self.n_duties):
-                model.Add(sum(w[e, d, s] for e in range(self.n_employees)) == 1)
+                if relax_level >= 2:
+                    # 緩和モード: 勩務場所を空にしても良い
+                    model.Add(sum(w[e, d, s] for e in range(self.n_employees)) <= 1)
+                else:
+                    # 通常モード: 必ず1人配置
+                    model.Add(sum(w[e, d, s] for e in range(self.n_employees)) == 1)
         
         # *** 修正: 大規模データでは基本制約を緩和 ***
         employees_count = self.n_employees
@@ -735,16 +741,27 @@ class CompleteScheduleEngine:
                 for d in range(n_days - 1):
                     model.Add(w[e, d, self.OFF_SHIFT_ID] + w[e, d + 1, self.OFF_SHIFT_ID] <= 1)
         else:
-            # 通常モード: 全制約適用
-            # 基本制約3: 勤務後は翌日非番
+            # 通常モード: 3日ローテーション基本制約（勤務→非番→休み）
+            # 基本制約3: 勤務後は翌日非番（ローテーションの基本）
             for e in range(self.n_employees):
                 for d in range(n_days - 1):
                     for s in range(self.n_duties):  # 各勤務場所について
                         model.AddImplication(w[e, d, s], w[e, d + 1, self.OFF_SHIFT_ID])
             
-            # *** 削除: 基本制約4「非番の前日は勤務」は厳しすぎるため削除 ***
-            # Geminiの提案: この制約は有休との組み合わせで解を困難にする
-            # 「勤務→翌日非番」は維持し、「非番→前日勤務」要求は削除
+            # ローテーション促進制約: 非番後は休暇を推奨（ソフト制約）
+            rotation_promotion_vars = []
+            holiday_shift_id = self.n_duties  # 休暇シフトID
+            for e in range(self.n_employees):
+                for d in range(n_days - 1):
+                    # 非番後に休暇を取るかどうかのフラグ
+                    rotation_var = model.NewBoolVar(f"rotation_{e}_{d}")
+                    # 非番の翌日が休暇ならrotation_var=1
+                    model.Add(w[e, d, self.OFF_SHIFT_ID] + w[e, d + 1, holiday_shift_id] == 2).OnlyEnforceIf(rotation_var)
+                    model.Add(w[e, d, self.OFF_SHIFT_ID] + w[e, d + 1, holiday_shift_id] <= 1).OnlyEnforceIf(rotation_var.Not())
+                    rotation_promotion_vars.append(rotation_var)
+            
+            # *** 制約緩和完了: 連続勤務制約を最大2日まで許可に変更 ***
+            # 前日勤務→翌日非番の強制も削除し、柔軟なスケジュールを実現
             
             # 基本制約4: 連続非番禁止（番号修正）
             for e in range(self.n_employees):
@@ -777,7 +794,7 @@ class CompleteScheduleEngine:
             for e in range(self.n_employees):
                 emp_name = self.id_to_name[e]
                 
-                # 制約1: 前日勤務なら1日目は必ず非番
+                # 制約1: 前日勤務なら1日目は必ず非番（24時間勤務後休息）
                 if (e, -1) in prev_duties and prev_duties[(e, -1)]:
                     model.Add(w[e, 0, self.OFF_SHIFT_ID] == 1)
                     cross_month_constraints.append(f"{emp_name}: 前日勤務 → 1日目非番強制")
@@ -812,13 +829,17 @@ class CompleteScheduleEngine:
                 if 0 <= day < n_days:
                     model.Add(w[employee_id, day, holiday_shift_id] == 1)
         
-        # 勤務フラグ変数
+        # 勤務フラグ変数（OR-Tools正しい実装）
         duty_flags = {}
         for e in range(self.n_employees):
             for d in range(n_days):
                 duty_flags[e, d] = model.NewBoolVar(f"duty_{e}_{d}")
-                duty_sum = sum(w[e, d, s] for s in range(self.n_duties))
-                model.Add(duty_flags[e, d] == duty_sum)
+                # 任意の勤務場所で勤務しているかどうかを表す
+                duty_vars = [w[e, d, s] for s in range(self.n_duties)]
+                # duty_flags[e,d] = 1 ↔ いずれかの勤務場所で勤務中
+                model.AddBoolOr(duty_vars).OnlyEnforceIf(duty_flags[e, d])
+                for duty_var in duty_vars:
+                    model.AddImplication(duty_var, duty_flags[e, d])
         
         # 月内二徹制約（常に適用）
         nitetu_vars = []
@@ -856,10 +877,9 @@ class CompleteScheduleEngine:
             model.AddMinEquality(nitetu_min, nitetu_counts)
             nitetu_gap = nitetu_max - nitetu_min
         
-        # 助勤制約
-        relief_work_vars = [w[self.relief_employee_id, d, s] 
-                           for d in range(n_days) for s in range(self.n_duties)]
-        relief_weight = self.weights['RELIEF'] if relax_level < 2 else self.weights['RELIEF'] // 10
+        # 助勤制約を無効化（正規隊員のみの構成）
+        relief_work_vars = []  # 助勤なし
+        relief_weight = 0  # 助勤ペナルティなし
         
         # 有休制約
         holiday_violations = []
@@ -878,13 +898,36 @@ class CompleteScheduleEngine:
                 if 0 <= day < n_days and 0 <= shift < self.n_shifts:
                     preference_terms.append(weight * w[emp_id, day, shift])
         
-        # 目的関数
+        # 勤務場所ローテーション促進のソフト制約
+        rotation_terms = []
+        for e in range(self.n_employees):  # 全員が正規隊員
+            # 各勤務場所の割り当て回数の平均化を促進
+            duty_counts = []
+            for duty_idx in range(self.n_duties):
+                duty_count = sum(w[e, d, duty_idx] for d in range(n_days))
+                duty_counts.append(duty_count)
+            
+            # 勤務場所間の差を最小化
+            if len(duty_counts) > 1:
+                for i in range(len(duty_counts) - 1):
+                    for j in range(i + 1, len(duty_counts)):
+                        diff_var = model.NewIntVar(0, n_days, f"rotation_diff_{e}_{i}_{j}")
+                        model.Add(diff_var >= duty_counts[i] - duty_counts[j])
+                        model.Add(diff_var >= duty_counts[j] - duty_counts[i])
+                        rotation_terms.append(diff_var)
+        
+        # 目的関数（3日ローテーション最適化）
         objective_terms = [
             relief_weight * sum(relief_work_vars),
             holiday_weight * sum(holiday_violations),
             self.weights['NITETU'] * sum(nitetu_vars),
-            self.weights['CROSS_MONTH'] * sum(cross_month_nitetu_vars)
+            self.weights['CROSS_MONTH'] * sum(cross_month_nitetu_vars),
+            10 * sum(rotation_terms),  # 勤務場所ローテーション促進
         ]
+        
+        # 3日ローテーション促進項を追加
+        if 'rotation_promotion_vars' in locals():
+            objective_terms.append(5 * sum(rotation_promotion_vars))  # 非番→休みのパターンを奨励
         
         if nitetu_gap != 0:
             objective_terms.append(self.weights['N2_GAP'] * nitetu_gap)
@@ -894,8 +937,8 @@ class CompleteScheduleEngine:
         
         return model, w, nitetu_counts, cross_month_constraints
     
-    def _add_greedy_initial_hints(self, solver, n_days, w, holidays):
-        """Greedy初期解ヒントをソルバーに直接追加（修正版）"""
+    def _add_greedy_initial_hints(self, model, n_days, w, holidays):
+        """現実的なGreedy初期解ヒントをモデルに追加（model.AddHint使用）"""
         hint_count = 0
         
         try:
@@ -903,11 +946,11 @@ class CompleteScheduleEngine:
             for (emp_id, day) in holidays:
                 if 0 <= day < n_days and emp_id < self.n_employees:
                     holiday_shift_id = self.n_duties  # 休暇シフト
-                    solver.AddHint(w[emp_id, day, holiday_shift_id], 1)
+                    model.AddHint(w[emp_id, day, holiday_shift_id], 1)
                     hint_count += 1
                     for s in range(self.n_shifts):
                         if s != holiday_shift_id:
-                            solver.AddHint(w[emp_id, day, s], 0)
+                            model.AddHint(w[emp_id, day, s], 0)
                             hint_count += 1
             
             # Step 2: 各勤務場所に1名ずつ配置（Round-robin方式）
@@ -915,19 +958,20 @@ class CompleteScheduleEngine:
                 for duty_idx in range(self.n_duties):
                     # 有休でない従業員から選択
                     available_employees = []
-                    for emp_id in range(self.n_employees - 1):  # 助勤除く
+                    for emp_id in range(self.n_employees):  # 全員が正規隊員
                         if (emp_id, day) not in holidays:
                             available_employees.append(emp_id)
                     
                     if available_employees:
                         # Round-robin で配置
                         selected_emp = available_employees[(day + duty_idx) % len(available_employees)]
-                        solver.AddHint(w[selected_emp, day, duty_idx], 1)
+                        model.AddHint(w[selected_emp, day, duty_idx], 1)
                         hint_count += 1
                         
-                        # 勤務→翌日非番のヒント
+                        # 24時間勤務後休息ヒント（現実的なパターン）
                         if day < n_days - 1:
-                            solver.AddHint(w[selected_emp, day + 1, self.OFF_SHIFT_ID], 1)
+                            # 勤務後は翌日非番のヒント
+                            model.AddHint(w[selected_emp, day + 1, self.OFF_SHIFT_ID], 1)
                             hint_count += 1
         except Exception as e:
             print(f"⚠️ ヒント追加エラー: {e}")
@@ -951,6 +995,8 @@ class CompleteScheduleEngine:
             start_level = 0  # 小規模は厳格から
         
         for relax_level in range(start_level, 4):
+            print(f"🔄 制約緩和レベル{relax_level}で解求中...")
+            
             # レベル3では有休を削減
             holidays_to_use = holidays
             if relax_level == 3:
@@ -969,14 +1015,18 @@ class CompleteScheduleEngine:
             
             # *** PHASE 3: 専門家分析による最適化タイムアウト設定 ***
             employees_count = len(self.employees)
-            if employees_count >= 20:
-                # 20名以上は3分（専門家推奨）
-                solver.parameters.max_time_in_seconds = 180
-                print(f"⏰ 超大規模データ({employees_count}名): 3分制限（専門家推奨）")
-            elif employees_count >= 15:
-                # 15名以上は8分（専門家推奨）
+            if employees_count >= 21:
+                # 21名以上は8分で現実的な精度を確保
                 solver.parameters.max_time_in_seconds = 480
-                print(f"⏰ 大規模データ({employees_count}名): 8分制限（専門家推奨）")
+                print(f"⏰ 21人以上の大規模データ({employees_count}名): 8分タイムアウト")
+            elif employees_count >= 18:
+                # 18名以上は6分
+                solver.parameters.max_time_in_seconds = 360
+                print(f"⏰ 中大規模データ({employees_count}名): 6分タイムアウト")
+            elif employees_count >= 15:
+                # 15名以上は5分
+                solver.parameters.max_time_in_seconds = 300
+                print(f"⏰ 大規模データ({employees_count}名): 5分タイムアウト")
             else:
                 solver.parameters.max_time_in_seconds = 240  # 標準4分
             
@@ -989,10 +1039,10 @@ class CompleteScheduleEngine:
                 solver.parameters.log_search_progress = True  # フィードバック向上
                 print(f"🔧 大規模最適化: PORTFOLIO_SEARCH + ログ有効")
                 
-                if employees_count >= 20:
-                    # 超大規模: LNSを無効化（専門家推奨）
+                if employees_count >= 21:
+                    # 21人以上: LNSを無効化して安定性向上
                     solver.parameters.use_lns = False
-                    print(f"🚫 超大規模最適化: LNS無効化")
+                    print(f"🚫 21人以上の大規模最適化: LNS無効化")
             else:
                 # 小規模: 従来設定
                 solver.parameters.log_search_progress = False
@@ -1002,22 +1052,33 @@ class CompleteScheduleEngine:
             solver.parameters.cp_model_presolve = True
             solver.parameters.linearization_level = 2
             
-            # 小規模の場合は高速化
-            if not holidays or (len(holidays) == 0 and employees_count <= 10):
+            # 小規模データ専用の緊急最適化
+            duty_locations_count = len(self.duty_names) if hasattr(self, 'duty_names') else 3
+            if employees_count <= 12:  # 12名以下は小規模扱い
+                solver.parameters.max_time_in_seconds = 60  # 1分制限
+                solver.parameters.num_workers = 1  # シングルスレッドで安定化
+                solver.parameters.search_branching = cp_model.FIXED_SEARCH  # シンプルサーチ
+                solver.parameters.use_lns = False  # LNS無効で安定化
+                solver.parameters.log_search_progress = False  # ログ無効で高速化
+                print(f"🚀 小規模モード({employees_count}名): 簡素化設定 + 1分制限")
+            elif not holidays or (len(holidays) == 0 and employees_count <= 15):
                 solver.parameters.max_time_in_seconds = 120  # 2分に延長
             
             # *** PHASE 2: 初期解ヒントを追加（修正版） ***
             if employees_count >= 15:
                 print(f"🎯 大規模データ({employees_count}名): Greedy初期解ヒントを適用")
-                hint_count = self._add_greedy_initial_hints(solver, n_days, w, holidays_to_use)
+                hint_count = self._add_greedy_initial_hints(model, n_days, w, holidays_to_use)
                 print(f"   ✅ {hint_count}個のヒントを追加")
             
             # 同期実行（スレッド安全）
             status = solver.Solve(model)
+            print(f"🔄 レベル{relax_level}結果: {solver.StatusName(status)}")
             
             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                print(f"✅ レベル{relax_level}で解決成功")
                 return relax_level, status, solver, w, nitetu_counts, relax_notes, cross_constraints
             
+            print(f"❌ レベル{relax_level}で解決失敗: {solver.StatusName(status)}")
             relax_notes.append(self.relax_messages[relax_level])
         
         # すべてのレベルで解けない場合
@@ -1579,6 +1640,8 @@ class CompleteGUI:
             st.session_state.calendar_data = {}
         if 'show_config' not in st.session_state:
             st.session_state.show_config = False
+        if 'expanded_sections' not in st.session_state:
+            st.session_state.expanded_sections = {}
         
         # 設定読み込み
         self.location_manager.load_config()
@@ -1955,7 +2018,7 @@ class CompleteGUI:
         self.year = st.session_state.get('current_year', 2025)
         self.month = st.session_state.get('current_month', 6)
         self.n_days = calendar.monthrange(self.year, self.month)[1]
-        self.employees = st.session_state.get('current_employees', ["Aさん", "Bさん", "Cさん", "助勤"])
+        self.employees = st.session_state.get('current_employees', ["Aさん", "Bさん", "Cさん"])
         self.prev_schedule_data = st.session_state.get('current_prev_schedule_data', {})
         
         # 現在の設定を表示
@@ -2007,7 +2070,7 @@ class CompleteGUI:
         self.year = st.session_state.get('current_year', 2025)
         self.month = st.session_state.get('current_month', 6)
         self.n_days = calendar.monthrange(self.year, self.month)[1]
-        self.employees = st.session_state.get('current_employees', ["Aさん", "Bさん", "Cさん", "助勤"])
+        self.employees = st.session_state.get('current_employees', ["Aさん", "Bさん", "Cさん"])
         self.prev_schedule_data = st.session_state.get('current_prev_schedule_data', {})
         
         # ページ全体のスタイル設定（サイドバー完全非表示）
@@ -2449,7 +2512,7 @@ class CompleteGUI:
         else:
             # 従来のテキストエリア方式（下位互換）
             st.subheader("📝 手動設定")
-            default_employees = ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "助勤"]
+            default_employees = ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "Hさん"]
             employees_text = st.text_area(
                 "従業員名（1行に1名）", 
                 value="\n".join(default_employees[:employee_count]),
@@ -2458,12 +2521,21 @@ class CompleteGUI:
             )
             new_employees = [emp.strip() for emp in employees_text.split('\n') if emp.strip()]
         
-        # 従業員数チェック
+        # 従業員数チェックと人員不足警告
+        duty_locations_count = len(self.duty_names) if hasattr(self, 'duty_names') else 5
+        recommended_min = duty_locations_count * 3  # 勤務場所数 x 3人
+        recommended_max = duty_locations_count * 4  # 勤務場所数 x 4人
+        
         if len(new_employees) > 45:
             st.error("⚠️ 従業員は最大45名まで設定できます")
             new_employees = new_employees[:45]
         elif len(new_employees) < 3:
-            st.error("❌ 従業員は最低3名必要です（固定従業員+助勤）")
+            st.error("❌ 従業員は最低3名必要です（正規隊員のみ）")
+        elif len(new_employees) < recommended_min:
+            st.warning(f"⚠️ 人員不足の可能性: {duty_locations_count}つの勤務場所には{recommended_min}-{recommended_max}人が推奨です（現在{len(new_employees)}人）")
+            st.info("📊 人員不足時はスケジュール生成が困難になる場合があります")
+        elif len(new_employees) > recommended_max:
+            st.info(f"📊 {duty_locations_count}つの勤務場所には{recommended_min}-{recommended_max}人が最適です（現在{len(new_employees)}人）")
         
         # 統計情報表示
         st.info(f"📊 従業員数: {len(new_employees)}名 | 勤務場所: {duty_location_count}箇所")
@@ -3027,9 +3099,9 @@ class CompleteGUI:
             st.info("デバッグ情報はありません")
     
     def _generate_employee_names(self, count):
-        """自動従業員名生成 (A-san, B-san, etc.)"""
+        """自動従業員名生成 (A-san, B-san, etc.) - 全員正規隊員"""
         names = []
-        for i in range(count - 1):  # 最後の1名は助勤
+        for i in range(count):  # 全員が正規隊員
             if i < 26:
                 # A-Z
                 names.append(f"{chr(65 + i)}さん")
@@ -3037,7 +3109,6 @@ class CompleteGUI:
                 # AA, BB, CC...
                 letter = chr(65 + (i - 26) % 26)
                 names.append(f"{letter}{letter}さん")
-        names.append("助勤")  # 最後は常に助勤
         return names
     
     def _generate_duty_locations(self, count):
@@ -3105,7 +3176,7 @@ class CompleteGUI:
         
         if new_count > old_count:
             # 勤務場所が増えた場合：新しい勤務場所は全従業員で勤務可能にする
-            for emp_idx in range(len(current_employees) - 1):  # 助勤除く
+            for emp_idx in range(len(current_employees)):  # 全員が正規隊員
                 for duty_idx in range(old_count, new_count):
                     restriction_key = f'restriction_{emp_idx}_{duty_idx}'
                     # 新規勤務場所はデフォルトで勤務可能（True）
@@ -3159,7 +3230,7 @@ class CompleteGUI:
         restrictions = {}
         
         # マトリックス表示
-        for emp_idx, employee in enumerate(self.employees[:-1]):  # 助勤は除く
+        for emp_idx, employee in enumerate(self.employees):  # 全員が正規隊員
             st.subheader(f"👤 {employee}")
             restrictions[employee] = {}
             

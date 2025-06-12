@@ -1462,6 +1462,14 @@ class CompleteGUI:
         if 'current_site' not in st.session_state:
             available_sites = self.config_manager.get_available_sites()
             st.session_state.current_site = available_sites[0] if available_sites else 'default'
+        if 'expanded_sections' not in st.session_state:
+            st.session_state.expanded_sections = {
+                'employees': False,
+                'sites': False, 
+                'constraints': False,
+                'schedule': True,
+                'analysis': False
+            }
         
         # Phase 2: ヘッダー拡張
         col1, col2, col3 = st.columns([2, 1, 1])
@@ -1810,6 +1818,11 @@ class CompleteGUI:
         """スケジュール生成セクション（Phase 2）"""
         st.markdown("#### 📅 スケジュール生成")
         
+        # ここでパラメータ設定UIを呼び出す
+        self._create_schedule_parameters_input()
+
+        st.markdown("---")
+        
         # 既存のメインページ機能を組み込み
         col1, col2 = st.columns(2)
         
@@ -2099,6 +2112,37 @@ class CompleteGUI:
         with col2:
             self._create_control_panel()
     
+    def _create_schedule_parameters_input(self):
+        """スケジュールパラメータ入力UIを作成し、インスタンス属性を設定する"""
+        st.header("📋 基本設定")
+
+        # 年月設定（最優先）
+        self.year = st.number_input("年", value=datetime.now().year, min_value=2020, max_value=2030)
+        self.month = st.selectbox("月", range(1, 13), index=datetime.now().month - 1)
+        self.n_days = calendar.monthrange(self.year, self.month)[1]
+
+        # 前月情報表示
+        prev_year, prev_month = self._get_prev_month_info()
+        st.info(f"対象: {self.year}年{self.month}月 ({self.n_days}日間)")
+        st.info(f"前月: {prev_year}年{prev_month}月")
+
+        st.markdown("---")
+
+        # 従業員設定（この部分はAdvanced UIでは別管理のため、ここではシンプルなリスト取得に留める）
+        # basicモードとの互換性のため、ここではconfig_managerから取得する形に統一
+        self.employees = list(self.config_manager.get_employee_preferences().keys())
+        if not self.employees:
+            # デフォルトとしてA,B,Cさんを設定
+            self.employees = ["Aさん", "Bさん", "Cさん"]
+            st.warning("従業員が設定されていません。デフォルトの従業員（A,B,Cさん）を使用します。")
+        
+        st.info(f"対象従業員数: {len(self.employees)} 名")
+
+        # 前月末勤務設定
+        st.header("🔄 前月末勤務情報")
+        st.warning("⚠️ 前日勤務者は翌月1日目が自動的に非番になります")
+        self.prev_schedule_data = self._create_prev_schedule_input(prev_month)
+    
     def _create_sidebar(self):
         """サイドバー（Phase 1: 設定選択対応）"""
         # Phase 1: 設定ファイル選択
@@ -2137,79 +2181,20 @@ class CompleteGUI:
         
         st.markdown("---")
         
-        st.header("📋 基本設定")
-        
-        # 年月設定（最優先）
-        self.year = st.number_input("年", value=2025, min_value=2020, max_value=2030)
-        self.month = st.selectbox("月", range(1, 13), index=5)
-        self.n_days = calendar.monthrange(self.year, self.month)[1]
-        
-        # 前月情報表示
-        prev_year, prev_month = self._get_prev_month_info()
-        st.info(f"対象: {self.year}年{self.month}月 ({self.n_days}日間)")
-        st.info(f"前月: {prev_year}年{prev_month}月")
-        
+        # 新しいメソッドを呼び出す
+        self._create_schedule_parameters_input()
+
         st.markdown("---")
         
-        # 現在の勤務場所表示
+        # 勤務場所表示と詳細設定ボタンは残す
         duty_names = self.location_manager.get_duty_names()
         st.write("**現在の勤務場所:**")
         for name in duty_names:
             st.write(f"• {name}")
         
-        # 詳細設定ボタン（勤務場所の下に配置）
         if st.button("⚙️ 詳細設定", use_container_width=True):
             st.session_state.show_config = True
             st.rerun()
-        
-        # Phase 1: 新規設定作成ボタン
-        if st.button("🆕 新規設定作成", use_container_width=True):
-            # 新規設定モードに切り替え
-            st.session_state.new_config_mode = True
-            st.session_state.show_config = True
-            st.rerun()
-        
-        st.markdown("---")
-        
-        # 従業員設定
-        st.header("👥 従業員設定")
-        default_employees = ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "助勤"]
-        employees_text = st.text_area(
-            "従業員名（1行に1名）", 
-            value="\n".join(default_employees),
-            height=150
-        )
-        new_employees = [emp.strip() for emp in employees_text.split('\n') if emp.strip()]
-        
-        # 従業員数チェック（最大50名まで）
-        if len(new_employees) > 50:
-            st.error("⚠️ 従業員は最大50名まで設定できます")
-            new_employees = new_employees[:50]
-        elif len(new_employees) < 2:
-            st.error("❌ 従業員は最低2名必要です（固定従業員+助勤）")
-        
-        st.info(f"現在の従業員数: {len(new_employees)} / 50名")
-        
-        # 勤務体制の目安表示
-        if len(new_employees) >= 30:
-            estimated_duties = (len(new_employees) - 5) // 3  # バッファ5名除いて3名体制
-            st.info(f"💡 推定対応可能勤務数: 約{estimated_duties}勤務（3名体制想定）")
-        
-        # 従業員リストが変更されたかチェック
-        if 'last_employees' not in st.session_state:
-            st.session_state.last_employees = new_employees
-        elif st.session_state.last_employees != new_employees:
-            # 従業員リストが変更された場合、関連セッション状態をクリア
-            st.session_state.calendar_data = {}
-            st.session_state.last_employees = new_employees
-            st.success("✅ 従業員設定が更新されました。関連データをリセットしました。")
-        
-        self.employees = new_employees
-        
-        # 前月末勤務設定
-        st.header("🔄 前月末勤務情報")
-        st.warning("⚠️ 前日勤務者は翌月1日目が自動的に非番になります")
-        self.prev_schedule_data = self._create_prev_schedule_input(prev_month)
     
     def _get_prev_month_info(self):
         """前月情報取得"""
@@ -2228,7 +2213,8 @@ class CompleteGUI:
         duty_options = ["未入力"] + self.location_manager.get_duty_names() + ["非番", "休"]
         
         for emp_idx, emp in enumerate(self.employees):
-            with st.expander(f"{emp}の前月末勤務"):
+            with st.container(border=True):
+                st.subheader(f"📅 {emp}の前月末勤務")
                 emp_schedule = []
                 for i in range(PREV_DAYS_COUNT):
                     day_num = prev_days - PREV_DAYS_COUNT + i + 1
@@ -2256,21 +2242,31 @@ class CompleteGUI:
         """カレンダー入力（完全修正版）"""
         st.header("📅 希望入力")
         
-        if not self.employees:
+        # 従業員リストを取得
+        current_employees = list(self.config_manager.get_employee_preferences().keys())
+        
+        if not current_employees:
             st.warning("先に従業員を設定してください")
             return
         
+        # 年月から日数を計算（先にUI要素で年月を設定）
+        year = st.number_input("年", value=2025, min_value=2020, max_value=2030, key="calendar_year")
+        month = st.selectbox("月", range(1, 13), index=5, key="calendar_month")
+        n_days = calendar.monthrange(year, month)[1]
+        
+        st.info(f"対象: {year}年{month}月 ({n_days}日間)")
+        
         # 従業員選択（安全な処理）
-        if not self.employees:
+        if not current_employees:
             st.warning("先に従業員を設定してください")
             return
         
         # 現在の従業員リストに存在しない選択をクリア
         if 'main_emp_select' in st.session_state:
-            if st.session_state.main_emp_select not in self.employees:
+            if st.session_state.main_emp_select not in current_employees:
                 del st.session_state['main_emp_select']
         
-        selected_emp = st.selectbox("従業員を選択", self.employees, key="main_emp_select")
+        selected_emp = st.selectbox("従業員を選択", current_employees, key="main_emp_select")
         
         if selected_emp:
             # データ初期化
@@ -2312,11 +2308,11 @@ class CompleteGUI:
                 new_selected_days = []
                 
                 # 日付を4列で表示
-                for row in range((self.n_days + 3) // 4):
+                for row in range((n_days + 3) // 4):
                     cols = st.columns(4)
                     for col_idx, col in enumerate(cols):
                         day = row * 4 + col_idx + 1
-                        if day <= self.n_days:
+                        if day <= n_days:
                             # チェックボックスの初期値は現在の選択状態
                             checkbox_key = f"holiday_{selected_emp}_{day}"
                             is_currently_selected = day in current_holiday_days
@@ -2356,8 +2352,8 @@ class CompleteGUI:
                 duty_date = st.date_input(
                     "勤務希望日",
                     value=None,
-                    min_value=date(self.year, self.month, 1),
-                    max_value=date(self.year, self.month, self.n_days),
+                    min_value=date(year, month, 1),
+                    max_value=date(year, month, n_days),
                     key=f"duty_date_{selected_emp}"
                 )
                 
@@ -2390,13 +2386,17 @@ class CompleteGUI:
         st.header("🎛️ 生成制御")
         
         # 設定確認
-        with st.expander("📊 設定確認"):
+        with st.container(border=True):
+            st.markdown("##### 📊 設定確認")
             total_holidays = 0
             total_duties = 0
             cross_constraints_preview = []
             
+            # 従業員リストを取得
+            current_employees = list(self.config_manager.get_employee_preferences().keys())
+            
             # 希望統計
-            for emp in self.employees:
+            for emp in current_employees:
                 if emp in st.session_state.calendar_data:
                     emp_data = st.session_state.calendar_data[emp]
                     h_count = len(emp_data['holidays'])
@@ -2408,7 +2408,7 @@ class CompleteGUI:
                         st.write(f"**{emp}**: 休暇{h_count}件, 勤務希望{d_count}件")
             
             # 月またぎ制約予測
-            for emp in self.employees:
+            for emp in current_employees:
                 if emp in self.prev_schedule_data:
                     emp_data = self.prev_schedule_data[emp]
                     if len(emp_data) >= 1:

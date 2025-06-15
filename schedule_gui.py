@@ -1,29 +1,12 @@
 #!/usr/bin/env python3
 """
-勤務表自動作成システム 完全版（パフォーマンス最適化済み）
+勤務表自動作成システム 完全版
 - 月またぎ制約完全対応（前月末勤務処理）
 - 複数勤務場所対応（駅A、指令、警乗等）
 - 非番自動処理
 - カレンダー複数選択対応
 - Excel色分け出力
-- ゲーミフィケーション機能（リアルタイム最適化可視化）
-- 動的従業員管理（3-20名スケール対応）
-- 従業員制約マトリックス機能
-- ストレステスト機能
-
-【重要な修正内容】
-🔧 マルチスレッド問題を完全修正（ScriptRunContext エラー解決）
-✅ 同期実行版に変更（スレッド安全）
-✅ ソルバー設定最適化（シングルスレッド、ログ無効化）
-✅ 空の有休制約時の高速化（15秒タイムアウト）
-✅ 空のカレンダーデータ対応強化
-✅ UI更新の安定化
-✅ エラーハンドリング強化
 """
-
-# =================== バージョン情報 ===================
-SYSTEM_VERSION = "v3.1"
-SYSTEM_BUILD_DATE = "2025-06-09"
 
 import streamlit as st
 import xlsxwriter
@@ -32,253 +15,131 @@ import re
 import calendar
 import json
 import tempfile
-import time
 from datetime import datetime, date
 from collections import defaultdict
-from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
 from ortools.sat.python import cp_model
-import plotly.graph_objects as go
-import plotly.express as px
-import pandas as pd
 
 
-# =================== ゲーミフィケーション機能 ===================
+# =================== 設定管理システム（Phase 1） ===================
 
-@dataclass
-class SolverProgress:
-    """ソルバーの進捗状況を表すデータクラス"""
-    iteration: int
-    objective_value: int
-    best_bound: int
-    gap_percentage: float
-    constraint_violations: Dict[str, int]
-    time_elapsed: float
-    solution_quality: str
-    constraint_details: Dict[str, List[str]]
-
-
-class GamifiedSolutionCallback(cp_model.CpSolverSolutionCallback):
-    """ゲーミフィケーション機能付きソリューションコールバック"""
-    
-    def __init__(self, model_variables, constraint_info, progress_queue):
-        cp_model.CpSolverSolutionCallback.__init__(self)
-        self.model_variables = model_variables
-        self.constraint_info = constraint_info
-        self.progress_queue = progress_queue
-        self.iteration_count = 0
-        self.start_time = time.time()
-        self.best_solutions = []
-        
-    def on_solution_callback(self):
-        """新しい解が見つかった時のコールバック"""
-        self.iteration_count += 1
-        current_time = time.time()
-        elapsed_time = current_time - self.start_time
-        
-        # 現在の解を評価
-        objective_value = self.ObjectiveValue()
-        best_bound = self.BestObjectiveBound()
-        gap = abs(objective_value - best_bound) / max(abs(objective_value), 1) * 100
-        
-        # 制約違反をチェック
-        violations = self._check_constraint_violations()
-        
-        # 解の品質を判定
-        quality = self._assess_solution_quality(violations, gap)
-        
-        # 進捗情報を作成
-        progress = SolverProgress(
-            iteration=self.iteration_count,
-            objective_value=int(objective_value),
-            best_bound=int(best_bound),
-            gap_percentage=gap,
-            constraint_violations=violations,
-            time_elapsed=elapsed_time,
-            solution_quality=quality,
-            constraint_details=self._get_constraint_details(violations)
-        )
-        
-        # キューに進捗を送信
-        try:
-            self.progress_queue.put(progress, block=False)
-        except queue.Full:
-            pass  # キューが満杯の場合はスキップ
-            
-        self.best_solutions.append(progress)
-        
-    def _check_constraint_violations(self):
-        """制約違反をチェック"""
-        violations = {
-            'nitetu_violations': 0,      # 二徹違反
-            'triple_shift_violations': 0, # 三徹違反
-            'holiday_violations': 0,      # 有休違反
-            'preference_violations': 0,   # 希望違反
-            'balance_violations': 0       # バランス違反
-        }
-        
-        try:
-            # 実際の制約チェックロジック（簡略化）
-            w = self.model_variables.get('w', {})
-            
-            if not w:
-                return violations
-            
-            # 簡単な推定値を返す（実際の制約チェックは複雑）
-            violations['nitetu_violations'] = max(0, (self.iteration_count % 8) - 4)
-            violations['balance_violations'] = max(0, (self.iteration_count % 5) - 2)
-            violations['holiday_violations'] = max(0, (self.iteration_count % 6) - 3)
-                    
-        except Exception as e:
-            # エラーが発生した場合は推定値を返す
-            violations['nitetu_violations'] = max(0, self.iteration_count // 5)
-            violations['balance_violations'] = max(0, (self.iteration_count % 7) - 3)
-                    
-        return violations
-    
-    def _assess_solution_quality(self, violations, gap):
-        """解の品質を評価"""
-        total_violations = sum(violations.values())
-        
-        if total_violations == 0 and gap < 1:
-            return "🏆 PERFECT"
-        elif total_violations <= 2 and gap < 5:
-            return "🥇 EXCELLENT"
-        elif total_violations <= 5 and gap < 10:
-            return "🥈 GOOD"
-        elif total_violations <= 10:
-            return "🥉 ACCEPTABLE"
-        else:
-            return "⚠️ NEEDS_IMPROVEMENT"
-    
-    def _get_constraint_details(self, violations):
-        """制約違反の詳細情報を取得"""
-        details = {}
-        for constraint_type, count in violations.items():
-            if count > 0:
-                details[constraint_type] = [
-                    f"違反数: {count}",
-                    f"改善必要度: {'高' if count > 5 else '中' if count > 2 else '低'}"
-                ]
-        return details
-
-
-def create_progress_visualization(progress_data):
-    """進捗データの可視化を作成"""
-    if not progress_data:
-        return None, None
-    
-    df = pd.DataFrame([
-        {
-            'iteration': p.iteration,
-            'objective': p.objective_value,
-            'gap': p.gap_percentage,
-            'time': p.time_elapsed,
-            'quality': p.solution_quality
-        }
-        for p in progress_data
-    ])
-    
-    # 目的関数値の推移
-    fig_objective = go.Figure()
-    fig_objective.add_trace(go.Scatter(
-        x=df['iteration'],
-        y=df['objective'],
-        mode='lines+markers',
-        name='目的関数値',
-        line=dict(color='rgb(0, 100, 200)', width=3),
-        marker=dict(size=8)
-    ))
-    
-    fig_objective.update_layout(
-        title="🎯 目的関数値の改善推移",
-        xaxis_title="反復回数",
-        yaxis_title="目的関数値",
-        template="plotly_white",
-        height=300
-    )
-    
-    # ギャップの推移
-    fig_gap = go.Figure()
-    fig_gap.add_trace(go.Scatter(
-        x=df['time'],
-        y=df['gap'],
-        mode='lines+markers',
-        name='最適性ギャップ',
-        line=dict(color='rgb(200, 50, 50)', width=3),
-        marker=dict(size=8)
-    ))
-    
-    fig_gap.update_layout(
-        title="📊 最適性ギャップの推移",
-        xaxis_title="経過時間 (秒)",
-        yaxis_title="ギャップ (%)",
-        template="plotly_white",
-        height=300
-    )
-    
-    return fig_objective, fig_gap
-
-
-def create_constraint_violation_chart(violations):
-    """制約違反のチャートを作成"""
-    if not violations:
-        return None
-    
-    violation_types = list(violations.keys())
-    violation_counts = list(violations.values())
-    
-    # 日本語ラベル
-    japanese_labels = {
-        'nitetu_violations': '二徹違反',
-        'triple_shift_violations': '三徹違反',
-        'holiday_violations': '有休違反',
-        'preference_violations': '希望違反',
-        'balance_violations': 'バランス違反'
-    }
-    
-    display_labels = [japanese_labels.get(vt, vt) for vt in violation_types]
-    
-    fig = go.Figure(data=[
-        go.Bar(
-            x=display_labels,
-            y=violation_counts,
-            marker_color=['red' if count > 0 else 'green' for count in violation_counts]
-        )
-    ])
-    
-    fig.update_layout(
-        title="🚨 制約違反状況",
-        xaxis_title="制約タイプ",
-        yaxis_title="違反数",
-        template="plotly_white",
-        height=300
-    )
-    
-    return fig
-
-
-def show_achievement_effect(quality):
-    """達成エフェクトを表示"""
-    if "PERFECT" in quality:
-        st.balloons()
-        st.success("🏆 完璧な解が見つかりました！ すべての制約を満たしています！")
-    elif "EXCELLENT" in quality:
-        st.success("🥇 優秀な解です！ ほぼ完璧な結果が得られました！")
-    elif "GOOD" in quality:
-        st.info("🥈 良い解です！ 実用的な結果が得られました！")
-    elif "COMPLETED" in quality:
-        st.balloons()
-        st.success("🎉 求解完了！ 最適な勤務表が生成されました！")
-
-
-# =================== 勤務場所管理 ===================
-
-class WorkLocationManager:
-    """勤務場所管理クラス"""
+class ConfigurationManager:
+    """Phase 1: 最小限設定管理クラス"""
     
     def __init__(self):
-        # デフォルト設定（すぐに使用可能）
+        self.configs_dir = "configs"
+        self.ensure_configs_dir()
+        
+        # デフォルト設定
+        self.default_config = {
+            "config_name": "デフォルト設定",
+            "created_date": datetime.now().strftime("%Y-%m-%d"),
+            "work_locations": [
+                {"name": "駅A", "type": "一徹勤務", "duration": 16, "color": "#FF6B6B"},
+                {"name": "指令", "type": "一徹勤務", "duration": 16, "color": "#FF8E8E"},
+                {"name": "警乗", "type": "一徹勤務", "duration": 16, "color": "#FFB6B6"}
+            ],
+            "holiday_type": {"name": "休暇", "color": "#FFEAA7"},
+            "employees": ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "助勤"],
+            "employee_priorities": {
+                "Aさん": {"駅A": 3, "指令": 2, "警乗": 0},
+                "Bさん": {"駅A": 3, "指令": 3, "警乗": 3},
+                "Cさん": {"駅A": 0, "指令": 0, "警乗": 3}
+            },
+            "priority_weights": {"0": 1000, "1": 10, "2": 5, "3": 0}
+        }
+        
+        # 現在の設定
+        self.current_config = self.default_config.copy()
+    
+    def ensure_configs_dir(self):
+        """configs/ディレクトリの確保"""
+        if not os.path.exists(self.configs_dir):
+            os.makedirs(self.configs_dir)
+    
+    def get_config_files(self):
+        """設定ファイル一覧取得"""
+        if not os.path.exists(self.configs_dir):
+            return []
+        files = [f for f in os.listdir(self.configs_dir) if f.endswith('.json')]
+        return sorted(files)
+    
+    def load_config(self, filename=None):
+        """設定読み込み"""
+        if filename is None:
+            return False
+        
+        filepath = os.path.join(self.configs_dir, filename)
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                self.current_config = config
+                return True
+        except Exception as e:
+            print(f"設定読み込みエラー: {e}")
+            return False
+    
+    def save_config(self, config_name, custom_priorities=None):
+        """設定保存"""
+        # ファイル名生成（日本語対応）
+        date_str = datetime.now().strftime("%Y%m%d")
+        safe_name = config_name.replace(" ", "_").replace("/", "_")
+        filename = f"{safe_name}_{date_str}.json"
+        filepath = os.path.join(self.configs_dir, filename)
+        
+        # 設定データ作成
+        config_data = self.current_config.copy()
+        config_data["config_name"] = config_name
+        config_data["created_date"] = datetime.now().strftime("%Y-%m-%d")
+        
+        if custom_priorities:
+            config_data["employee_priorities"] = custom_priorities
+        
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, ensure_ascii=False, indent=2)
+            return filename
+        except Exception as e:
+            print(f"設定保存エラー: {e}")
+            return None
+    
+    def get_work_locations(self):
+        """勤務場所一覧取得"""
+        return self.current_config.get("work_locations", self.default_config["work_locations"])
+    
+    def get_duty_names(self):
+        """勤務場所名一覧"""
+        locations = self.get_work_locations()
+        return [loc["name"] for loc in locations]
+    
+    def get_employee_priorities(self):
+        """従業員優先度設定取得"""
+        return self.current_config.get("employee_priorities", self.default_config["employee_priorities"])
+    
+    def get_priority_weights(self):
+        """優先度重み取得"""
+        weights = self.current_config.get("priority_weights", self.default_config["priority_weights"])
+        return {int(k): v for k, v in weights.items()}
+    
+    def update_employee_priorities(self, priorities):
+        """従業員優先度更新"""
+        self.current_config["employee_priorities"] = priorities
+    
+    def get_employees(self):
+        """従業員リスト取得"""
+        return self.current_config.get("employees", ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "助勤"])
+    
+    def update_employees(self, employees):
+        """従業員リスト更新"""
+        self.current_config["employees"] = employees
+
+
+class WorkLocationManager:
+    """勤務場所管理クラス（既存互換性維持）"""
+    
+    def __init__(self, config_manager=None):
+        self.config_manager = config_manager
+        
+        # デフォルト設定（既存互換性）
         self.default_config = {
             "duty_locations": [
                 {"name": "駅A", "type": "一徹勤務", "duration": 16, "color": "#FF6B6B"},
@@ -288,31 +149,53 @@ class WorkLocationManager:
             "holiday_type": {"name": "休暇", "color": "#FFEAA7"}
         }
         
-        # 現在の設定
-        self.duty_locations = self.default_config["duty_locations"].copy()
-        self.holiday_type = self.default_config["holiday_type"].copy()
+        # 設定初期化
+        if self.config_manager:
+            work_locations = self.config_manager.get_work_locations()
+            self.duty_locations = work_locations.copy()  # コピーを作成
+            self.holiday_type = self.config_manager.current_config.get("holiday_type", self.default_config["holiday_type"])
+        else:
+            # ファイルから直接読み込み試行
+            if os.path.exists("work_locations.json"):
+                self.load_config()
+            else:
+                self.duty_locations = self.default_config["duty_locations"].copy()
+                self.holiday_type = self.default_config["holiday_type"].copy()
     
     def get_duty_locations(self):
         """勤務場所一覧取得"""
+        if self.config_manager:
+            return self.config_manager.get_work_locations()
         return self.duty_locations
     
     def get_duty_names(self):
         """勤務場所名一覧"""
+        if self.config_manager:
+            return self.config_manager.get_duty_names()
         return [loc["name"] for loc in self.duty_locations]
     
     def add_duty_location(self, name, duty_type, duration, color):
         """勤務場所追加"""
-        self.duty_locations.append({
+        new_location = {
             "name": name,
             "type": duty_type,
             "duration": duration,
             "color": color
-        })
+        }
+        self.duty_locations.append(new_location)
+        
+        # Config Managerにも反映
+        if self.config_manager:
+            self.config_manager.current_config["work_locations"] = self.duty_locations.copy()
     
     def remove_duty_location(self, index):
         """勤務場所削除"""
         if 0 <= index < len(self.duty_locations):
             del self.duty_locations[index]
+            
+            # Config Managerにも反映
+            if self.config_manager:
+                self.config_manager.current_config["work_locations"] = self.duty_locations.copy()
     
     def update_duty_location(self, index, name, duty_type, duration, color):
         """勤務場所更新"""
@@ -323,6 +206,10 @@ class WorkLocationManager:
                 "duration": duration,
                 "color": color
             }
+            
+            # Config Managerにも反映
+            if self.config_manager:
+                self.config_manager.current_config["work_locations"] = self.duty_locations.copy()
     
     def reset_to_default(self):
         """デフォルト設定に戻す"""
@@ -335,200 +222,54 @@ class WorkLocationManager:
             "duty_locations": self.duty_locations[:15],  # 最大15勤務まで
             "holiday_type": self.holiday_type
         }
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            print(f"✅ 設定を {filename} に保存しました")
+            return True
+        except Exception as e:
+            print(f"❌ 設定保存エラー: {e}")
+            return False
     
     def load_config(self, filename="work_locations.json"):
         """設定読み込み"""
         try:
             with open(filename, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-                self.duty_locations = config.get("duty_locations", self.default_config["duty_locations"])
+                # 重複を削除して読み込み
+                duty_locations = config.get("duty_locations", self.default_config["duty_locations"])
+                self.duty_locations = self._remove_duplicates(duty_locations)
                 self.holiday_type = config.get("holiday_type", self.default_config["holiday_type"])
+                
+                # Config Managerにも反映
+                if self.config_manager:
+                    self.config_manager.current_config["work_locations"] = self.duty_locations.copy()
+                
                 return True
-        except:
+        except Exception as e:
+            print(f"設定読み込みエラー: {e}")
             return False
+    
+    def _remove_duplicates(self, duty_locations):
+        """重複する勤務場所を削除"""
+        seen_names = set()
+        unique_locations = []
+        for location in duty_locations:
+            name = location.get("name", "")
+            if name and name not in seen_names:
+                seen_names.add(name)
+                unique_locations.append(location)
+        return unique_locations
 
 
 # =================== 完全版エンジン ===================
 
-class ConstraintDiagnostics:
-    """制約診断クラス - 厳しい制約を特定してユーザーに分かりやすく説明"""
-    
-    @staticmethod
-    def analyze_constraints(employees, holidays, employee_restrictions, location_manager, n_days):
-        """制約を分析して問題のある箇所を特定"""
-        issues = []
-        warnings = []
-        suggestions = []
-        
-        n_employees = len(employees)
-        duty_locations = location_manager.get_duty_locations()
-        n_duties = len(duty_locations)
-        
-        # 1. 基本的な人員不足チェック
-        required_positions_per_day = n_duties
-        available_employees = n_employees  # 全員が正規隊員
-        coverage_ratio = available_employees / required_positions_per_day if required_positions_per_day > 0 else 0
-        
-        if coverage_ratio < 1.0:
-            issues.append({
-                "type": "人員不足",
-                "severity": "critical",
-                "message": f"深刻な人員不足: {required_positions_per_day}箇所の勤務場所に対して{available_employees}名しかいません",
-                "suggestion": f"最低{required_positions_per_day * 3}名が推奨です（勤務場所数 x 3）"
-            })
-        elif coverage_ratio < 1.5:
-            warnings.append({
-                "type": "人員不足",
-                "severity": "warning", 
-                "message": f"人員がギリギリです: {required_positions_per_day}箇所に{available_employees}名",
-                "suggestion": "余裕を持たせるため2-3名の追加を推奨します"
-            })
-        
-        # 2. 有休集中度チェック
-        holiday_density = ConstraintDiagnostics._analyze_holiday_density(holidays, n_days, n_employees)
-        for issue in holiday_density:
-            if issue["severity"] == "critical":
-                issues.append(issue)
-            else:
-                warnings.append(issue)
-        
-        # 3. 従業員制限チェック
-        restriction_issues = ConstraintDiagnostics._analyze_employee_restrictions(
-            employee_restrictions, employees, duty_locations
-        )
-        issues.extend(restriction_issues["critical"])
-        warnings.extend(restriction_issues["warnings"])
-        
-        # 4. 勤務場所数vs従業員数のバランス
-        if n_duties > available_employees:
-            issues.append({
-                "type": "構造的問題",
-                "severity": "critical",
-                "message": f"勤務場所{n_duties}箇所 > 利用可能従業員{available_employees}名",
-                "suggestion": f"勤務場所を{available_employees}箇所以下に削減するか、従業員を{n_duties + 1}名以上に増員してください"
-            })
-        
-        # 5. 総合的な提案生成
-        suggestions = ConstraintDiagnostics._generate_suggestions(issues, warnings, n_employees, n_duties, holidays)
-        
-        return {
-            "issues": issues,
-            "warnings": warnings, 
-            "suggestions": suggestions,
-            "feasibility_score": ConstraintDiagnostics._calculate_feasibility_score(issues, warnings)
-        }
-    
-    @staticmethod
-    def _analyze_holiday_density(holidays, n_days, n_employees):
-        """有休の集中度を分析"""
-        issues = []
-        
-        if not holidays:
-            return issues
-        
-        # 日別有休申請数をカウント
-        daily_holidays = {}
-        for emp_id, day in holidays:
-            if day not in daily_holidays:
-                daily_holidays[day] = 0
-            daily_holidays[day] += 1
-        
-        max_safe_holidays_per_day = max(1, n_employees // 3)  # 1日の安全な有休数
-        
-        for day, count in daily_holidays.items():
-            if count > max_safe_holidays_per_day:
-                issues.append({
-                    "type": "有休集中",
-                    "severity": "critical" if count > n_employees // 2 else "warning",
-                    "message": f"{day + 1}日: {count}名が有休申請（推奨上限: {max_safe_holidays_per_day}名）",
-                    "suggestion": f"{day + 1}日の有休を分散させるか、{count - max_safe_holidays_per_day}名の有休を他の日に移動してください"
-                })
-        
-        return issues
-    
-    @staticmethod
-    def _analyze_employee_restrictions(employee_restrictions, employees, duty_locations):
-        """従業員制限を分析"""
-        critical = []
-        warnings = []
-        
-        if not employee_restrictions:
-            return {"critical": critical, "warnings": warnings}
-        
-        # 各勤務場所で働ける人数をチェック
-        for duty_idx, duty in enumerate(duty_locations):
-            available_for_duty = 0
-            restricted_employees = []
-            
-            for emp_idx, emp_name in enumerate(employees):
-                if emp_name == "助勤":  # 助勤はカウントしない
-                    continue
-                    
-                restriction_key = f"restriction_{emp_idx}_{duty_idx}"
-                if not employee_restrictions.get(restriction_key, False):  # False = 制限なし
-                    available_for_duty += 1
-                else:
-                    restricted_employees.append(emp_name)
-            
-            if available_for_duty == 0:
-                critical.append({
-                    "type": "勤務場所制限",
-                    "severity": "critical",
-                    "message": f"「{duty['name']}」に働ける従業員が0名です",
-                    "suggestion": f"「{duty['name']}」の制限を緩和するか、勤務場所を削除してください"
-                })
-            elif available_for_duty == 1:
-                warnings.append({
-                    "type": "勤務場所制限", 
-                    "severity": "warning",
-                    "message": f"「{duty['name']}」に働ける従業員が1名のみです",
-                    "suggestion": f"「{duty['name']}」に追加で働ける従業員を設定することを推奨します"
-                })
-        
-        return {"critical": critical, "warnings": warnings}
-    
-    @staticmethod
-    def _generate_suggestions(issues, warnings, n_employees, n_duties, holidays):
-        """総合的な提案を生成"""
-        suggestions = []
-        
-        critical_count = len(issues)
-        warning_count = len(warnings)
-        
-        if critical_count > 0:
-            suggestions.append("🚨 重大な問題があります。まず赤色の問題を解決してください。")
-        
-        if warning_count > 0:
-            suggestions.append("⚠️ 警告事項があります。可能であれば黄色の警告も対処してください。")
-        
-        # 具体的な提案
-        if critical_count == 0 and warning_count == 0:
-            suggestions.append("✅ 制約は適切に設定されています。勤務表生成を実行できます。")
-        elif critical_count == 0:
-            suggestions.append("⭐ 軽微な警告のみです。生成を試行できますが、改善余地があります。")
-        
-        return suggestions
-    
-    @staticmethod
-    def _calculate_feasibility_score(issues, warnings):
-        """実行可能性スコアを計算（0-100）"""
-        if len(issues) > 0:
-            return max(0, 30 - len(issues) * 10)  # 重大問題があると大幅減点
-        elif len(warnings) > 2:
-            return 70 - len(warnings) * 5  # 警告が多いと減点
-        elif len(warnings) > 0:
-            return 85 - len(warnings) * 5  # 軽微な警告
-        else:
-            return 100  # 完璧
-
-
 class CompleteScheduleEngine:
-    """完全版勤務表生成エンジン（月またぎ制約完全対応）"""
+    """完全版勤務表生成エンジン（Phase 1: 優先度対応）"""
     
-    def __init__(self, location_manager):
+    def __init__(self, location_manager, config_manager=None):
         self.location_manager = location_manager
+        self.config_manager = config_manager
         
         # 非番シフトID（動的に設定）
         self.OFF_SHIFT_ID = None
@@ -540,8 +281,12 @@ class CompleteScheduleEngine:
             'NITETU': 15,      # 二徹ペナルティ
             'N2_GAP': 30,      # 二徹格差ペナルティ
             'PREF': 5,         # 希望違反ペナルティ
-            'CROSS_MONTH': 20  # 月またぎ二徹ペナルティ
+            'CROSS_MONTH': 20, # 月またぎ二徹ペナルティ
+            'PRIORITY': 25     # 優先度違反ペナルティ（Phase 1新機能）
         }
+        
+        # 優先度重み（Phase 1）
+        self.priority_weights = {0: 1000, 1: 10, 2: 5, 3: 0}  # デフォルト
         
         # 制約緩和メッセージ
         self.relax_messages = {
@@ -559,19 +304,16 @@ class CompleteScheduleEngine:
         """システム設定"""
         self.employees = employee_names
         self.n_employees = len(employee_names)
-        # 助勤システムを無効化（全員が正規隊員）
-        self.relief_employee_id = None  # 助勤なし
+        self.relief_employee_id = self.n_employees - 1
         
-        # 勤務場所設定（session stateから最新情報を取得）
-        import streamlit as st
-        current_location_manager = st.session_state.location_manager
-        duty_locations = current_location_manager.get_duty_locations()
+        # 勤務場所設定
+        duty_locations = self.location_manager.get_duty_locations()
         self.duty_names = [loc["name"] for loc in duty_locations]
         self.n_duties = len(self.duty_names)
         
         # シフト定義: 各勤務場所 + 休暇 + 非番
         # 非番は自動生成されるが、制約処理のために明示的なシフトとして扱う
-        self.shift_names = self.duty_names + [current_location_manager.holiday_type["name"]] + ["非番"]
+        self.shift_names = self.duty_names + [self.location_manager.holiday_type["name"]] + ["非番"]
         self.n_shifts = len(self.shift_names)
         self.OFF_SHIFT_ID = self.n_shifts - 1  # 最後が非番
         
@@ -586,11 +328,12 @@ class CompleteScheduleEngine:
         print(f"  総シフト: {self.n_shifts}種類")
         print(f"  非番ID: {self.OFF_SHIFT_ID}")
     
-    def parse_requirements(self, requirement_lines, n_days):
-        """要求文の解析（改良版）"""
+    def parse_requirements(self, requirement_lines, n_days, employee_priorities=None):
+        """要求文の解析（Phase 1: 優先度対応）"""
         ng_constraints = defaultdict(list)
         preferences = {}
         holidays = set()
+        priority_violations = []  # Phase 1: 優先度違反
         debug_info = []
         
         day_pattern = re.compile(r'(\d{1,2})日')
@@ -644,6 +387,27 @@ class CompleteScheduleEngine:
                                 preferences[(employee_id, day, duty_id)] = +self.weights['PREF']
                                 debug_info.append(f"✅ {employee_name}: {day+1}日の{duty_name}勤務回避追加")
         
+        # Phase 1: 優先度ペナルティ処理
+        if employee_priorities and self.config_manager:
+            priority_weights = self.config_manager.get_priority_weights()
+            debug_info.append(f"🎯 Phase 1: 優先度重み適用 {priority_weights}")
+            
+            for emp_name, priorities in employee_priorities.items():
+                if emp_name in self.name_to_id:
+                    emp_id = self.name_to_id[emp_name]
+                    for duty_name, priority in priorities.items():
+                        if duty_name in [loc['name'] for loc in self.location_manager.get_duty_locations()]:
+                            duty_id = [i for i, loc in enumerate(self.location_manager.get_duty_locations()) 
+                                     if loc['name'] == duty_name][0]
+                            penalty = priority_weights.get(priority, 0)
+                            
+                            # 優先度に基づいたペナルティ設定
+                            for day in range(n_days):
+                                if penalty > 0:  # ペナルティありの場合
+                                    preferences[(emp_id, day, duty_id)] = penalty
+                                    
+                            debug_info.append(f"✅ {emp_name}:{duty_name}優先度{priority}(ペナルティ{penalty})適用")
+        
         return ng_constraints, preferences, holidays, debug_info
     
     def parse_previous_month_schedule(self, prev_schedule_data, prev_month_last_days=3):
@@ -690,13 +454,13 @@ class CompleteScheduleEngine:
                 
                 # 🔥 重要: 前日勤務チェック
                 if relative_day == -1 and is_duty:
-                    debug_info.append(f"⚠️ {employee_name}は前日({shift})勤務 → 月初1日目は非番必須")
+                    debug_info.append(f"⚠️ {employee_name}は前日({shift})勤務 → {self.month}月1日は非番必須")
         
         debug_info.append(f"📊 前月末勤務データ: {len(prev_duties)}件")
         return prev_duties, debug_info
     
     def build_optimization_model(self, n_days, ng_constraints, preferences, holidays, 
-                                relax_level=0, prev_duties=None, employee_restrictions=None):
+                                relax_level=0, prev_duties=None):
         """最適化モデル構築（月またぎ制約修正版）"""
         model = cp_model.CpModel()
         
@@ -712,79 +476,27 @@ class CompleteScheduleEngine:
             for d in range(n_days):
                 model.AddExactlyOne(w[e, d, s] for s in range(self.n_shifts))
         
-        # 基本制約2: 各勤務場所は1日1人（緩和モード対応）
+        # 基本制約2: 各勤務場所は1日1人
         for d in range(n_days):
             for s in range(self.n_duties):
-                if relax_level >= 2:
-                    # 緩和モード: 勩務場所を空にしても良い
-                    model.Add(sum(w[e, d, s] for e in range(self.n_employees)) <= 1)
-                else:
-                    # 通常モード: 必ず1人配置
-                    model.Add(sum(w[e, d, s] for e in range(self.n_employees)) == 1)
+                model.Add(sum(w[e, d, s] for e in range(self.n_employees)) == 1)
         
-        # *** 修正: 大規模データでは基本制約を緩和 ***
-        employees_count = self.n_employees
-        ultra_large_mode = employees_count > 20 and relax_level >= 2
+        # 基本制約3: 勤務後は翌日非番
+        for e in range(self.n_employees):
+            for d in range(n_days - 1):
+                for s in range(self.n_duties):  # 各勤務場所について
+                    model.AddImplication(w[e, d, s], w[e, d + 1, self.OFF_SHIFT_ID])
         
-        if ultra_large_mode:
-            print(f"🚨 超大規模モード({employees_count}名): 基本制約を大幅緩和")
-            
-            # 超緩和版: 勤務後は翌日非番（50%の確率で適用）
-            for e in range(self.n_employees):
-                if e % 2 == 0:  # 半分の従業員のみ適用
-                    for d in range(n_days - 1):
-                        for s in range(self.n_duties):
-                            model.AddImplication(w[e, d, s], w[e, d + 1, self.OFF_SHIFT_ID])
-            
-            # 連続非番禁止のみ維持（最低限の制約）
-            for e in range(self.n_employees):
-                for d in range(n_days - 1):
-                    model.Add(w[e, d, self.OFF_SHIFT_ID] + w[e, d + 1, self.OFF_SHIFT_ID] <= 1)
-        else:
-            # 通常モード: 3日ローテーション基本制約（勤務→非番→休み）
-            # 基本制約3: 勤務後は翌日非番（ローテーションの基本）
-            for e in range(self.n_employees):
-                for d in range(n_days - 1):
-                    for s in range(self.n_duties):  # 各勤務場所について
-                        model.AddImplication(w[e, d, s], w[e, d + 1, self.OFF_SHIFT_ID])
-            
-            # ローテーション促進制約: 非番後は休暇を推奨（ソフト制約）
-            rotation_promotion_vars = []
-            holiday_shift_id = self.n_duties  # 休暇シフトID
-            for e in range(self.n_employees):
-                for d in range(n_days - 1):
-                    # 非番後に休暇を取るかどうかのフラグ
-                    rotation_var = model.NewBoolVar(f"rotation_{e}_{d}")
-                    # 非番の翌日が休暇ならrotation_var=1
-                    model.Add(w[e, d, self.OFF_SHIFT_ID] + w[e, d + 1, holiday_shift_id] == 2).OnlyEnforceIf(rotation_var)
-                    model.Add(w[e, d, self.OFF_SHIFT_ID] + w[e, d + 1, holiday_shift_id] <= 1).OnlyEnforceIf(rotation_var.Not())
-                    rotation_promotion_vars.append(rotation_var)
-            
-            # *** 制約緩和完了: 連続勤務制約を最大2日まで許可に変更 ***
-            # 前日勤務→翌日非番の強制も削除し、柔軟なスケジュールを実現
-            
-            # 基本制約4: 連続非番禁止（番号修正）
-            for e in range(self.n_employees):
-                for d in range(n_days - 1):
-                    model.Add(w[e, d, self.OFF_SHIFT_ID] + w[e, d + 1, self.OFF_SHIFT_ID] <= 1)
+        # 基本制約4: 非番の前日は勤務
+        for e in range(self.n_employees):
+            for d in range(1, n_days):
+                duty_prev_day = sum(w[e, d - 1, s] for s in range(self.n_duties))
+                model.Add(duty_prev_day >= w[e, d, self.OFF_SHIFT_ID])
         
-        # 🚫 従業員勤務制約（新機能）
-        restriction_constraints = []
-        if employee_restrictions:
-            print(f"🔧 従業員制約マトリックス適用中...")
-            for e in range(self.n_employees):
-                emp_name = self.id_to_name[e]
-                if emp_name in employee_restrictions:
-                    emp_restrictions = employee_restrictions[emp_name]
-                    for duty_idx, duty_name in enumerate(self.duty_names):
-                        if not emp_restrictions.get(duty_name, True):
-                            # この従業員はこの勤務場所で働けない
-                            for d in range(n_days):
-                                model.Add(w[e, d, duty_idx] == 0)
-                            restriction_constraints.append(f"{emp_name}: {duty_name}勤務禁止")
-                            print(f"  🚫 {emp_name}を{duty_name}勤務禁止に設定")
-        else:
-            print(f"ℹ️ 従業員制約マトリックスなし - 全員全勤務場所で勤務可能")
+        # 基本制約5: 連続非番禁止
+        for e in range(self.n_employees):
+            for d in range(n_days - 1):
+                model.Add(w[e, d, self.OFF_SHIFT_ID] + w[e, d + 1, self.OFF_SHIFT_ID] <= 1)
         
         # 🔥 月またぎ制約（完全修正版）
         cross_month_constraints = []
@@ -794,7 +506,7 @@ class CompleteScheduleEngine:
             for e in range(self.n_employees):
                 emp_name = self.id_to_name[e]
                 
-                # 制約1: 前日勤務なら1日目は必ず非番（24時間勤務後休息）
+                # 制約1: 前日勤務なら1日目は必ず非番
                 if (e, -1) in prev_duties and prev_duties[(e, -1)]:
                     model.Add(w[e, 0, self.OFF_SHIFT_ID] == 1)
                     cross_month_constraints.append(f"{emp_name}: 前日勤務 → 1日目非番強制")
@@ -829,30 +541,28 @@ class CompleteScheduleEngine:
                 if 0 <= day < n_days:
                     model.Add(w[employee_id, day, holiday_shift_id] == 1)
         
-        # 勤務フラグ変数（OR-Tools正しい実装）
+        # 勤務フラグ変数
         duty_flags = {}
         for e in range(self.n_employees):
             for d in range(n_days):
                 duty_flags[e, d] = model.NewBoolVar(f"duty_{e}_{d}")
-                # 任意の勤務場所で勤務しているかどうかを表す
-                duty_vars = [w[e, d, s] for s in range(self.n_duties)]
-                # duty_flags[e,d] = 1 ↔ いずれかの勤務場所で勤務中
-                model.AddBoolOr(duty_vars).OnlyEnforceIf(duty_flags[e, d])
-                for duty_var in duty_vars:
-                    model.AddImplication(duty_var, duty_flags[e, d])
+                duty_sum = sum(w[e, d, s] for s in range(self.n_duties))
+                model.Add(duty_flags[e, d] == duty_sum)
         
-        # 月内二徹制約（常に適用）
+        # 月内二徹制約
         nitetu_vars = []
-        for e in range(self.n_employees):
-            for d in range(n_days - 2):
-                nitetu_var = model.NewBoolVar(f"nitetu_{e}_{d}")
-                model.Add(duty_flags[e, d] + duty_flags[e, d + 2] == 2).OnlyEnforceIf(nitetu_var)
-                model.Add(duty_flags[e, d] + duty_flags[e, d + 2] <= 1).OnlyEnforceIf(nitetu_var.Not())
-                nitetu_vars.append(nitetu_var)
-            
-            # 四徹以上の防止（常に適用）
-            for d in range(n_days - 4):
-                model.Add(duty_flags[e, d] + duty_flags[e, d + 2] + duty_flags[e, d + 4] <= 2)
+        if relax_level <= 2:
+            for e in range(self.n_employees):
+                for d in range(n_days - 2):
+                    nitetu_var = model.NewBoolVar(f"nitetu_{e}_{d}")
+                    model.Add(duty_flags[e, d] + duty_flags[e, d + 2] == 2).OnlyEnforceIf(nitetu_var)
+                    model.Add(duty_flags[e, d] + duty_flags[e, d + 2] <= 1).OnlyEnforceIf(nitetu_var.Not())
+                    nitetu_vars.append(nitetu_var)
+                
+                # 四徹以上の防止
+                if relax_level == 0:
+                    for d in range(n_days - 4):
+                        model.Add(duty_flags[e, d] + duty_flags[e, d + 2] + duty_flags[e, d + 4] <= 2)
         
         # 二徹カウント変数
         nitetu_counts = []
@@ -877,9 +587,10 @@ class CompleteScheduleEngine:
             model.AddMinEquality(nitetu_min, nitetu_counts)
             nitetu_gap = nitetu_max - nitetu_min
         
-        # 助勤制約を無効化（正規隊員のみの構成）
-        relief_work_vars = []  # 助勤なし
-        relief_weight = 0  # 助勤ペナルティなし
+        # 助勤制約
+        relief_work_vars = [w[self.relief_employee_id, d, s] 
+                           for d in range(n_days) for s in range(self.n_duties)]
+        relief_weight = self.weights['RELIEF'] if relax_level < 2 else self.weights['RELIEF'] // 10
         
         # 有休制約
         holiday_violations = []
@@ -898,36 +609,13 @@ class CompleteScheduleEngine:
                 if 0 <= day < n_days and 0 <= shift < self.n_shifts:
                     preference_terms.append(weight * w[emp_id, day, shift])
         
-        # 勤務場所ローテーション促進のソフト制約
-        rotation_terms = []
-        for e in range(self.n_employees):  # 全員が正規隊員
-            # 各勤務場所の割り当て回数の平均化を促進
-            duty_counts = []
-            for duty_idx in range(self.n_duties):
-                duty_count = sum(w[e, d, duty_idx] for d in range(n_days))
-                duty_counts.append(duty_count)
-            
-            # 勤務場所間の差を最小化
-            if len(duty_counts) > 1:
-                for i in range(len(duty_counts) - 1):
-                    for j in range(i + 1, len(duty_counts)):
-                        diff_var = model.NewIntVar(0, n_days, f"rotation_diff_{e}_{i}_{j}")
-                        model.Add(diff_var >= duty_counts[i] - duty_counts[j])
-                        model.Add(diff_var >= duty_counts[j] - duty_counts[i])
-                        rotation_terms.append(diff_var)
-        
-        # 目的関数（3日ローテーション最適化）
+        # 目的関数
         objective_terms = [
             relief_weight * sum(relief_work_vars),
             holiday_weight * sum(holiday_violations),
             self.weights['NITETU'] * sum(nitetu_vars),
-            self.weights['CROSS_MONTH'] * sum(cross_month_nitetu_vars),
-            10 * sum(rotation_terms),  # 勤務場所ローテーション促進
+            self.weights['CROSS_MONTH'] * sum(cross_month_nitetu_vars)
         ]
-        
-        # 3日ローテーション促進項を追加
-        if 'rotation_promotion_vars' in locals():
-            objective_terms.append(5 * sum(rotation_promotion_vars))  # 非番→休みのパターンを奨励
         
         if nitetu_gap != 0:
             objective_terms.append(self.weights['N2_GAP'] * nitetu_gap)
@@ -937,66 +625,12 @@ class CompleteScheduleEngine:
         
         return model, w, nitetu_counts, cross_month_constraints
     
-    def _add_greedy_initial_hints(self, model, n_days, w, holidays):
-        """現実的なGreedy初期解ヒントをモデルに追加（model.AddHint使用）"""
-        hint_count = 0
-        
-        try:
-            # Step 1: 有休を最初に配置
-            for (emp_id, day) in holidays:
-                if 0 <= day < n_days and emp_id < self.n_employees:
-                    holiday_shift_id = self.n_duties  # 休暇シフト
-                    model.AddHint(w[emp_id, day, holiday_shift_id], 1)
-                    hint_count += 1
-                    for s in range(self.n_shifts):
-                        if s != holiday_shift_id:
-                            model.AddHint(w[emp_id, day, s], 0)
-                            hint_count += 1
-            
-            # Step 2: 各勤務場所に1名ずつ配置（Round-robin方式）
-            for day in range(n_days):
-                for duty_idx in range(self.n_duties):
-                    # 有休でない従業員から選択
-                    available_employees = []
-                    for emp_id in range(self.n_employees):  # 全員が正規隊員
-                        if (emp_id, day) not in holidays:
-                            available_employees.append(emp_id)
-                    
-                    if available_employees:
-                        # Round-robin で配置
-                        selected_emp = available_employees[(day + duty_idx) % len(available_employees)]
-                        model.AddHint(w[selected_emp, day, duty_idx], 1)
-                        hint_count += 1
-                        
-                        # 24時間勤務後休息ヒント（現実的なパターン）
-                        if day < n_days - 1:
-                            # 勤務後は翌日非番のヒント
-                            model.AddHint(w[selected_emp, day + 1, self.OFF_SHIFT_ID], 1)
-                            hint_count += 1
-        except Exception as e:
-            print(f"⚠️ ヒント追加エラー: {e}")
-        
-        return hint_count
-    
-    def solve_with_relaxation(self, n_days, ng_constraints, preferences, holidays, prev_duties=None, employee_restrictions=None):
-        """段階的制約緩和による求解（同期実行版）"""
+    def solve_with_relaxation(self, n_days, ng_constraints, preferences, holidays, prev_duties=None):
+        """段階的制約緩和による求解"""
         relax_notes = []
         cross_constraints = []
         
-        # *** 修正: 大規模データでは制約緩和を早期開始 ***
-        employees_count = len(self.employees)
-        if employees_count > 20:
-            start_level = 1  # 25名以上は緩和レベル1から開始
-            print(f"🔧 大規模データ({employees_count}名): 制約緩和レベル1から開始")
-        elif employees_count > 15:
-            start_level = 0  # 15名以上は標準
-            print(f"ℹ️ 中規模データ({employees_count}名): 標準の制約緩和")
-        else:
-            start_level = 0  # 小規模は厳格から
-        
-        for relax_level in range(start_level, 4):
-            print(f"🔄 制約緩和レベル{relax_level}で解求中...")
-            
+        for relax_level in range(4):
             # レベル3では有休を削減
             holidays_to_use = holidays
             if relax_level == 3:
@@ -1006,79 +640,18 @@ class CompleteScheduleEngine:
             
             # モデル構築
             model, w, nitetu_counts, cross_const = self.build_optimization_model(
-                n_days, ng_constraints, preferences, holidays_to_use, relax_level, prev_duties, employee_restrictions
+                n_days, ng_constraints, preferences, holidays_to_use, relax_level, prev_duties
             )
             cross_constraints = cross_const
             
-            # 求解（最適化パラメータ調整）
+            # 求解
             solver = cp_model.CpSolver()
-            
-            # *** PHASE 3: 専門家分析による最適化タイムアウト設定 ***
-            employees_count = len(self.employees)
-            if employees_count >= 21:
-                # 21名以上は8分で現実的な精度を確保
-                solver.parameters.max_time_in_seconds = 480
-                print(f"⏰ 21人以上の大規模データ({employees_count}名): 8分タイムアウト")
-            elif employees_count >= 18:
-                # 18名以上は6分
-                solver.parameters.max_time_in_seconds = 360
-                print(f"⏰ 中大規模データ({employees_count}名): 6分タイムアウト")
-            elif employees_count >= 15:
-                # 15名以上は5分
-                solver.parameters.max_time_in_seconds = 300
-                print(f"⏰ 大規模データ({employees_count}名): 5分タイムアウト")
-            else:
-                solver.parameters.max_time_in_seconds = 240  # 標準4分
-            
-            # *** PHASE 3: 専門家分析による最適化ソルバー設定 ***
-            solver.parameters.num_workers = 1  # シングルスレッドで安定動作
-            
-            if employees_count >= 15:
-                # 15名以上: PORTFOLIO_SEARCH（専門家推奨）
-                solver.parameters.search_branching = cp_model.PORTFOLIO_SEARCH
-                solver.parameters.log_search_progress = True  # フィードバック向上
-                print(f"🔧 大規模最適化: PORTFOLIO_SEARCH + ログ有効")
-                
-                if employees_count >= 21:
-                    # 21人以上: LNSを無効化して安定性向上
-                    solver.parameters.use_lns = False
-                    print(f"🚫 21人以上の大規模最適化: LNS無効化")
-            else:
-                # 小規模: 従来設定
-                solver.parameters.log_search_progress = False
-                solver.parameters.search_branching = cp_model.FIXED_SEARCH
-            
-            # 共通最適化設定
-            solver.parameters.cp_model_presolve = True
-            solver.parameters.linearization_level = 2
-            
-            # 小規模データ専用の緊急最適化
-            duty_locations_count = len(self.duty_names) if hasattr(self, 'duty_names') else 3
-            if employees_count <= 12:  # 12名以下は小規模扱い
-                solver.parameters.max_time_in_seconds = 60  # 1分制限
-                solver.parameters.num_workers = 1  # シングルスレッドで安定化
-                solver.parameters.search_branching = cp_model.FIXED_SEARCH  # シンプルサーチ
-                solver.parameters.use_lns = False  # LNS無効で安定化
-                solver.parameters.log_search_progress = False  # ログ無効で高速化
-                print(f"🚀 小規模モード({employees_count}名): 簡素化設定 + 1分制限")
-            elif not holidays or (len(holidays) == 0 and employees_count <= 15):
-                solver.parameters.max_time_in_seconds = 120  # 2分に延長
-            
-            # *** PHASE 2: 初期解ヒントを追加（修正版） ***
-            if employees_count >= 15:
-                print(f"🎯 大規模データ({employees_count}名): Greedy初期解ヒントを適用")
-                hint_count = self._add_greedy_initial_hints(model, n_days, w, holidays_to_use)
-                print(f"   ✅ {hint_count}個のヒントを追加")
-            
-            # 同期実行（スレッド安全）
+            solver.parameters.max_time_in_seconds = 30
             status = solver.Solve(model)
-            print(f"🔄 レベル{relax_level}結果: {solver.StatusName(status)}")
             
             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-                print(f"✅ レベル{relax_level}で解決成功")
                 return relax_level, status, solver, w, nitetu_counts, relax_notes, cross_constraints
             
-            print(f"❌ レベル{relax_level}で解決失敗: {solver.StatusName(status)}")
             relax_notes.append(self.relax_messages[relax_level])
         
         # すべてのレベルで解けない場合
@@ -1129,18 +702,15 @@ class CompleteScheduleEngine:
             # 当月初情報（簡略表記）
             current_info = []
             for day in range(min(3, n_days)):
-                shift = "-"  # デフォルトを非番に変更
-                # 勤務をチェック
+                shift = "?"
                 for s in range(self.n_duties):
                     if solver.Value(w[emp_id, day, s]):
                         shift = self.duty_names[s]
                         break
-                # 勤務が見つからなかった場合、非番・休暇をチェック
-                if shift == "-":
-                    if self.OFF_SHIFT_ID is not None and solver.Value(w[emp_id, day, self.OFF_SHIFT_ID]):
-                        shift = "-"  # 簡略表記
-                    elif solver.Value(w[emp_id, day, self.n_shifts - 2]):
-                        shift = "休"  # 簡略表記
+                if shift == "?" and solver.Value(w[emp_id, day, self.OFF_SHIFT_ID]):
+                    shift = "-"  # 簡略表記
+                elif shift == "?" and solver.Value(w[emp_id, day, self.n_shifts - 2]):
+                    shift = "休"  # 簡略表記
                 current_info.append(f"{day+1}日: {shift}")
             
             # 制約違反チェック
@@ -1187,37 +757,33 @@ class CompleteScheduleEngine:
         
         return results
     
-    def solve_schedule(self, year, month, employee_names, calendar_data, prev_schedule_data=None, employee_restrictions=None):
-        """スケジュール求解（新GUI対応版）"""
+    def solve_schedule(self, year, month, employee_names, calendar_data, prev_schedule_data=None):
+        """スケジュール求解（Phase 1: 優先度対応版）"""
         n_days = calendar.monthrange(year, month)[1]
         self.setup_system(employee_names)
         
-        # カレンダーデータから要求文生成（空でも正常動作を保証）
+        # Phase 1: 従業員優先度取得
+        employee_priorities = None
+        if self.config_manager:
+            employee_priorities = self.config_manager.get_employee_priorities()
+            self.priority_weights = self.config_manager.get_priority_weights()
+        
+        # カレンダーデータから要求文生成
         requirement_lines = []
-        if calendar_data:  # calendar_dataが空でない場合のみ処理
-            for emp_name, emp_data in calendar_data.items():
-                if not emp_data:  # emp_dataが空の場合はスキップ
-                    continue
-                    
-                # 休暇希望
-                for holiday_date in emp_data.get('holidays', []):
-                    if isinstance(holiday_date, date):
-                        day = holiday_date.day
-                        requirement_lines.append(f"{emp_name}は{day}日に有休希望")
-                
-                # 勤務場所希望
-                for day, duty_name in emp_data.get('duty_preferences', {}).items():
-                    requirement_lines.append(f"{emp_name}は{day}日に{duty_name}勤務希望")
+        for emp_name, emp_data in calendar_data.items():
+            # 休暇希望
+            for holiday_date in emp_data.get('holidays', []):
+                if isinstance(holiday_date, date):
+                    day = holiday_date.day
+                    requirement_lines.append(f"{emp_name}は{day}日に有休希望")
+            
+            # 勤務場所希望
+            for day, duty_name in emp_data.get('duty_preferences', {}).items():
+                requirement_lines.append(f"{emp_name}は{day}日に{duty_name}勤務希望")
         
-        # 要求がない場合でも正常動作するようにログ追加
-        if not requirement_lines:
-            debug_info = ["📝 特別な要求なし - 基本勤務体制で生成します"]
-        else:
-            debug_info = [f"📝 要求文生成完了: {len(requirement_lines)}件"]
-        
-        # データ解析
-        ng_constraints, preferences, holidays, parse_debug = self.parse_requirements(requirement_lines, n_days)
-        debug_info.extend(parse_debug)
+        # データ解析（Phase 1: 優先度適用）
+        ng_constraints, preferences, holidays, debug_info = self.parse_requirements(
+            requirement_lines, n_days, employee_priorities)
         
         # 前月末勤務解析
         prev_duties = None
@@ -1226,7 +792,7 @@ class CompleteScheduleEngine:
             prev_duties, prev_debug = self.parse_previous_month_schedule(prev_schedule_data)
         
         # 最適化実行
-        result = self.solve_with_relaxation(n_days, ng_constraints, preferences, holidays, prev_duties, employee_restrictions)
+        result = self.solve_with_relaxation(n_days, ng_constraints, preferences, holidays, prev_duties)
         relax_level_used, status, solver, w, nitetu_counts, relax_notes, cross_constraints = result
         
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -1273,54 +839,27 @@ class ExcelExporter:
         self.engine = engine
     
     def create_excel_file(self, filename, result_data):
-        """完全なExcelファイル生成（エラーハンドリング強化）"""
-        workbook = None
-        try:
-            print(f"Excel生成開始: {filename}")
-            workbook = xlsxwriter.Workbook(filename)
-            
-            # フォーマット定義
-            print("フォーマット定義中...")
-            formats = self._create_formats(workbook)
-            
-            # メインシート作成
-            print("メインシート作成中...")
-            self._create_main_sheet(workbook, formats, result_data)
-            
-            # 統計シート作成
-            print("統計シート作成中...")
-            self._create_stats_sheet(workbook, formats, result_data)
-            
-            # 月またぎ分析シート作成
-            if result_data.get('prev_duties'):
-                print("月またぎ分析シート作成中...")
-                self._create_cross_month_sheet(workbook, formats, result_data)
-            
-            # 制約緩和レポートシート作成
-            print("制約緩和レポートシート作成中...")
-            self._create_relaxation_sheet(workbook, formats, result_data)
-            
-            print("Excelファイル確定中...")
-            workbook.close()
-            workbook = None  # closeが成功したことを示す
-            
-            # ファイル生成確認
-            if os.path.exists(filename):
-                file_size = os.path.getsize(filename)
-                print(f"Excel生成完了: {filename} ({file_size} bytes)")
-                return filename
-            else:
-                raise FileNotFoundError(f"Excelファイルが生成されませんでした: {filename}")
-            
-        except Exception as e:
-            print(f"Excel生成エラー: {e}")
-            if workbook:
-                try:
-                    workbook.close()
-                except:
-                    pass
-            # エラー時は再度例外を発生
-            raise e
+        """完全なExcelファイル生成"""
+        workbook = xlsxwriter.Workbook(filename)
+        
+        # フォーマット定義
+        formats = self._create_formats(workbook)
+        
+        # メインシート作成
+        self._create_main_sheet(workbook, formats, result_data)
+        
+        # 統計シート作成
+        self._create_stats_sheet(workbook, formats, result_data)
+        
+        # 月またぎ分析シート作成
+        if result_data.get('prev_duties'):
+            self._create_cross_month_sheet(workbook, formats, result_data)
+        
+        # 制約緩和レポートシート作成
+        self._create_relaxation_sheet(workbook, formats, result_data)
+        
+        workbook.close()
+        return filename
     
     def _create_formats(self, workbook):
         """Excelフォーマット定義"""
@@ -1423,31 +962,12 @@ class ExcelExporter:
         if solver.Value(w[emp_id, day, holiday_shift_id]):
             return holiday_shift_id, "休"  # 簡略表記
         
-        # 非番をチェック（動的ID計算）
-        off_shift_id = len(duty_names) + 1  # 休暇の次
+        # 非番をチェック
+        off_shift_id = self.engine.OFF_SHIFT_ID
         if solver.Value(w[emp_id, day, off_shift_id]):
             return off_shift_id, "-"  # 簡略表記
         
-        # フォールバック: 詳細チェック
-        try:
-            # 全シフトの値を確認
-            all_values = [solver.Value(w[emp_id, day, s]) for s in range(len(duty_names) + 2)]
-            active_shifts = [s for s, val in enumerate(all_values) if val == 1]
-            
-            if len(active_shifts) == 1:
-                shift_id = active_shifts[0]
-                if shift_id < len(duty_names):
-                    return shift_id, duty_names[shift_id]
-                elif shift_id == len(duty_names):
-                    return shift_id, "休"
-                elif shift_id == len(duty_names) + 1:
-                    return shift_id, "-"
-            
-            # 最終フォールバック
-            return len(duty_names) + 1, "-"  # 非番にフォールバック
-        except Exception as e:
-            print(f"Warning: _get_shift_value_and_text error for emp_id={emp_id}, day={day}: {e}")
-            return len(duty_names) + 1, "-"  # 安全なデフォルト
+        return -1, "?"
     
     def _determine_cell_format(self, formats, emp_id, day, shift_value, shift_text,
                               holidays, preferences, prev_duties, cross_constraints,
@@ -1621,18 +1141,13 @@ class ExcelExporter:
 # =================== GUI部分（完全版） ===================
 
 class CompleteGUI:
-    """完全版GUI（月またぎ制約対応）"""
+    """完全版GUI（Phase 1: 設定管理対応）"""
     
     def __init__(self):
-        # WorkLocationManagerをsession stateで管理（Streamlit再実行で状態を維持）
-        if 'location_manager' not in st.session_state:
-            st.session_state.location_manager = WorkLocationManager()
-            # 初期設定を確実に読み込む
-            st.session_state.location_manager.load_config()
-        # 常に最新のsession stateを使用
-        self.location_manager = st.session_state.location_manager
-        
-        self.engine = CompleteScheduleEngine(st.session_state.location_manager)
+        # Phase 1: 設定管理系初期化
+        self.config_manager = ConfigurationManager()
+        self.location_manager = WorkLocationManager(self.config_manager)
+        self.engine = CompleteScheduleEngine(self.location_manager, self.config_manager)
         self.excel_exporter = ExcelExporter(self.engine)
         
         # セッション状態初期化
@@ -1640,193 +1155,60 @@ class CompleteGUI:
             st.session_state.calendar_data = {}
         if 'show_config' not in st.session_state:
             st.session_state.show_config = False
-        if 'expanded_sections' not in st.session_state:
-            st.session_state.expanded_sections = {}
+        if 'selected_config' not in st.session_state:
+            st.session_state.selected_config = None
+        if 'show_priority_settings' not in st.session_state:
+            st.session_state.show_priority_settings = False
+        if 'last_employees' not in st.session_state:
+            st.session_state.last_employees = self.config_manager.get_employees()
         
-        # 設定読み込み
+        # デフォルト設定読み込み
+        config_files = self.config_manager.get_config_files()
+        if 'default.json' in config_files:
+            self.config_manager.load_config('default.json')
+        else:
+            # デフォルト設定ファイルがない場合は作成
+            default_filename = self.config_manager.save_config("デフォルト設定")
+            if default_filename:
+                print(f"✅ デフォルト設定ファイルを作成しました: {default_filename}")
+        
+        # 既存互換性維持
         self.location_manager.load_config()
+        
+        # 設定の初期読み込み後に重複除去と保存
+        if len(self.location_manager.duty_locations) != len(set(loc["name"] for loc in self.location_manager.duty_locations)):
+            # 重複が検出された場合、クリーンアップして保存
+            self.location_manager.duty_locations = self.location_manager._remove_duplicates(self.location_manager.duty_locations)
+            self.location_manager.save_config()
+            print("✅ 重複した勤務場所を削除してクリーンアップしました")
     
     def run(self):
         """メイン実行"""
-        # 初回実行時にスレッド関連状態をクリーンアップ
-        if 'threads_cleaned' not in st.session_state:
-            self._cleanup_threading_state()
-            st.session_state.threads_cleaned = True
-        
         self._setup_page()
         
         if st.session_state.show_config:
             self._configuration_page()
+        elif st.session_state.show_priority_settings:
+            self._priority_settings_page()
         else:
             self._main_page()
     
-    def _run_constraint_diagnosis(self):
-        """制約診断を実行"""
-        try:
-            # 現在の設定から必要なデータを取得
-            holidays = []
-            
-            # カレンダーデータから有休を抽出
-            for emp_idx, emp_name in enumerate(self.employees):
-                if emp_name in st.session_state.calendar_data:
-                    emp_data = st.session_state.calendar_data[emp_name]
-                    for day in emp_data.get('holidays', []):
-                        holidays.append((emp_idx, day))
-            
-            # 従業員制限を取得
-            employee_restrictions = st.session_state.get('employee_restrictions', {})
-            
-            # 診断実行
-            diagnosis = ConstraintDiagnostics.analyze_constraints(
-                self.employees,
-                holidays,
-                employee_restrictions,
-                self.location_manager,
-                self.n_days
-            )
-            
-            # 結果をセッション状態に保存
-            st.session_state.constraint_diagnosis = diagnosis
-            st.success("🔍 制約診断が完了しました")
-            st.rerun()
-            
-        except Exception as e:
-            st.error(f"診断中にエラーが発生しました: {str(e)}")
-    
-    def _display_constraint_diagnosis(self):
-        """制約診断結果を表示"""
-        diagnosis = st.session_state.get('constraint_diagnosis', {})
-        
-        if not diagnosis:
-            return
-        
-        issues = diagnosis.get('issues', [])
-        warnings = diagnosis.get('warnings', [])
-        suggestions = diagnosis.get('suggestions', [])
-        score = diagnosis.get('feasibility_score', 0)
-        
-        # スコア表示
-        score_color = "🟢" if score >= 70 else "🟡" if score >= 30 else "🔴"
-        st.metric(
-            "実行可能性スコア",
-            f"{score}点",
-            delta=f"{score_color} {'良好' if score >= 70 else '注意' if score >= 30 else '危険'}"
-        )
-        
-        # 重大な問題
-        if issues:
-            st.error("🚨 **重大な問題**")
-            for issue in issues:
-                with st.expander(f"❌ {issue['type']}: {issue['message']}", expanded=True):
-                    st.write(f"**問題**: {issue['message']}")
-                    st.write(f"**解決策**: {issue['suggestion']}")
-        
-        # 警告
-        if warnings:
-            st.warning("⚠️ **警告事項**")
-            for warning in warnings:
-                with st.expander(f"⚠️ {warning['type']}: {warning['message']}"):
-                    st.write(f"**警告**: {warning['message']}")
-                    st.write(f"**推奨**: {warning['suggestion']}")
-        
-        # 提案
-        if suggestions:
-            st.info("💡 **総合的な提案**")
-            for suggestion in suggestions:
-                st.write(f"• {suggestion}")
-        
-        # 問題がない場合
-        if not issues and not warnings:
-            st.success("✅ **制約に問題はありません**")
-            st.balloons()
-    
     def _setup_page(self):
-        """ページ設定（シンプル版）"""
+        """ページ設定（Phase 1）"""
         st.set_page_config(
-            page_title=f"勤務表システム {SYSTEM_VERSION}（月またぎ完全版）",
+            page_title="勤務表システム Phase 1",
             page_icon="📅",
             layout="wide"
         )
         
-        # タイトルとバージョン情報
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            st.title("📅 勤務表システム（月またぎ制約完全版）")
-        with col2:
-            st.markdown(f"""
-            <div style='text-align: right; margin-top: 20px;'>
-                <span style='background-color: #0E4B7C; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold;'>
-                    {SYSTEM_VERSION}
-                </span><br>
-                <span style='color: #666; font-size: 10px;'>{SYSTEM_BUILD_DATE}</span>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        st.success("🎉 **完全版**: 前月末勤務が正しく反映される月またぎ制約対応")
-        
-        # バージョン機能説明
-        with st.expander("🆕 v3.8 新機能", expanded=False):
-            st.markdown("""
-            **🔥 動的従業員管理システム（v3.3から）**
-            - 📊 スライダーで従業員数調整（3-45名）
-            - 🏢 勤務場所数調整（2-15箇所）
-            - 🤖 自動名前生成（A-san, B-san...）
-            - ✏️ 名前編集機能
-            
-            **🚫 従業員制約マトリックス（v3.3から）**
-            - 従業員別勤務場所制限
-            - チェックボックス式設定
-            - OR-Tools制約統合
-            
-            **🧪 ストレステスト機能（v3.3から）**
-            - 高負荷テスト（最大20名×10箇所）
-            - パフォーマンス測定
-            - 制約限界テスト
-            
-            **🔧 v3.4 改善内容**
-            - ⚡ 勤務場所スライダーのリアルタイム反映
-            - 🔄 勤務場所数変更時の自動更新
-            - 📊 勤務場所設定数の視覚的表示
-            - ✅ 変更完了時の成功メッセージ表示
-            
-            **🚀 v3.5 大規模対応強化**
-            - 📈 従業員数上限を45名に拡張
-            - 🏢 勤務ポスト数を15ポストに拡張
-            - ⏰ 求解時間を3分上限に設定
-            - 🎯 大規模データ最適化設定追加
-            - ⚠️ 大規模配置時の警告表示
-            
-            **🎛️ v3.6 操作性改善**
-            - 🔧 勤務場所スライダーのリアルタイム更新を無効化
-            - 🔄 「自動生成」ボタンで従業員・勤務場所を同時更新
-            - 💡 設定差異の視覚的表示（「自動生成で反映」ガイド）
-            - ✅ 生成完了時の詳細メッセージ表示
-            
-            **🔧 v3.7 表示修正**
-            - 🔄 勤務場所の確実な反映メカニズム追加
-            - 💾 Session Stateバックアップシステム
-            - 🔍 デバッグ表示で状態確認可能
-            - ⚠️ 勤務場所未設定時の警告メッセージ
-            
-            **🏗️ v3.8 根本的修正**
-            - 💾 WorkLocationManagerをSession Stateで永続化
-            - 🔄 Streamlit再実行で状態を維持
-            - 🔧 リセット機能でSession Stateも同期
-            - ✅ 勤務場所変更の完全な反映を保証
-            """)
+        st.title("📅 勤務表システム Phase 1")
+        st.success("🎆 **Phase 1**: 優先度設定 + 設定保存機能搭載")
         
         # リセットボタンのみ表示
         col1, col2 = st.columns([1, 9])
         with col1:
-            if st.button("🔄 リセット", key="reset_button_config"):
-                # セッション状態の location_manager もリセット
+            if st.button("🔄 リセット"):
                 self.location_manager.reset_to_default()
-                st.session_state.location_manager.reset_to_default()
-                # 関連する session state もクリア
-                if 'current_duty_locations' in st.session_state:
-                    del st.session_state.current_duty_locations
-                if 'current_duty_count' in st.session_state:
-                    del st.session_state.current_duty_count
                 st.success("デフォルト設定に戻しました")
                 st.rerun()
         
@@ -1837,7 +1219,7 @@ class CompleteGUI:
         st.header("⚙️ 詳細設定")
         
         # 戻るボタン
-        if st.button("← メインページに戻る", key="back_to_main_button"):
+        if st.button("← メインページに戻る"):
             st.session_state.show_config = False
             st.rerun()
         
@@ -1887,10 +1269,13 @@ class CompleteGUI:
             
             with col5:
                 if st.button("🗑️", key=f"delete_{i}"):
+                    location_name = location["name"]
                     self.location_manager.remove_duty_location(i)
-                    self.location_manager.save_config()  # 即座に保存
-                    st.success(f"勤務場所 {i+1} を削除しました")
-                    st.rerun()
+                    if self.location_manager.save_config():
+                        st.success(f"「{location_name}」を削除しました")
+                        st.rerun()
+                    else:
+                        st.error("削除に失敗しました")
             
             # 変更があったかチェック
             if (new_name != location["name"] or 
@@ -1905,451 +1290,240 @@ class CompleteGUI:
         # 変更があった場合は自動保存
         if changes_made:
             self.location_manager.save_config()
+            st.success("✅ 変更を自動保存しました")
         
         # 新規追加（最大15まで）
         if len(duty_locations) < 15:
             st.subheader("新規勤務場所追加")
-            col1, col2, col3, col4, col5 = st.columns([2, 2, 1, 1, 1])
             
-            with col1:
-                add_name = st.text_input("新しい勤務場所名", key="add_name")
-            with col2:
-                add_type = st.selectbox("勤務タイプ", ["一徹勤務", "日勤", "夜勤", "その他"], key="add_type")
-            with col3:
-                add_duration = st.number_input("時間", min_value=1, max_value=24, value=16, key="add_duration")
-            with col4:
-                add_color = st.color_picker("色", value="#45B7D1", key="add_color")
-            with col5:
-                if st.button("➕ 追加", key="add_location_button"):
+            # フォームを使用してセッション状態の問題を回避
+            with st.form("add_location_form"):
+                col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+                
+                with col1:
+                    add_name = st.text_input("新しい勤務場所名")
+                with col2:
+                    add_type = st.selectbox("勤務タイプ", ["一徹勤務", "日勤", "夜勤", "その他"])
+                with col3:
+                    add_duration = st.number_input("時間", min_value=1, max_value=24, value=16)
+                with col4:
+                    add_color = st.color_picker("色", value="#45B7D1")
+                
+                submitted = st.form_submit_button("➕ 追加", use_container_width=True)
+                
+                if submitted:
                     if add_name.strip():
-                        self.location_manager.add_duty_location(add_name.strip(), add_type, add_duration, add_color)
-                        self.location_manager.save_config()  # 即座に保存
-                        st.success(f"「{add_name}」を追加しました")
-                        st.rerun()
+                        # 重複チェック
+                        existing_names = [loc["name"] for loc in self.location_manager.duty_locations]
+                        if add_name.strip() in existing_names:
+                            st.error(f"「{add_name}」は既に存在します")
+                        else:
+                            self.location_manager.add_duty_location(add_name.strip(), add_type, add_duration, add_color)
+                            if self.location_manager.save_config():
+                                st.success(f"「{add_name}」を追加しました")
+                                st.rerun()
+                            else:
+                                st.error("保存に失敗しました")
                     else:
                         st.error("勤務場所名を入力してください")
         else:
             st.warning("⚠️ 最大15勤務場所まで追加できます")
         
         # 保存ボタン
-        if st.button("💾 設定を保存", type="primary", key="save_config_button"):
+        if st.button("💾 設定を保存", type="primary"):
             self.location_manager.save_config()
             st.success("✅ 設定を保存しました")
     
-    def _main_page(self):
-        """メインページ（ゲーミフィケーション対応）"""
+    def _priority_settings_page(self):
+        """優先度設定ページ（Phase 1）"""
+        st.header("🎯 従業員優先度設定")
         
-        # サイドバー状態管理ボタン（ページ上部に配置）
-        col1, col2, col3 = st.columns([2, 1, 1])
+        # 戻るボタン
+        if st.button("← メインページに戻る"):
+            st.session_state.show_priority_settings = False
+            st.rerun()
+        
+        st.info("📝 優先度: 3=最優先, 2=普通, 1=可能, 0=不可")
+        
+        # 現在の優先度設定取得
+        current_priorities = self.config_manager.get_employee_priorities()
+        duty_names = self.config_manager.get_duty_names()
+        
+        # 優先度選択肢
+        priority_options = ["0 (不可)", "1 (可能)", "2 (普通)", "3 (最優先)"]
+        
+        # 新しい優先度設定を格納
+        new_priorities = {}
+        
+        # 動的な従業員設定（助勤除く）
+        # セッション状態から従業員リストを取得
+        if 'last_employees' in st.session_state and st.session_state.last_employees:
+            all_employees = st.session_state.last_employees
+            target_employees = [emp for emp in all_employees if emp != "助勤"]  # 制限なしで全従業員表示
+        elif hasattr(self, 'employees') and self.employees:
+            target_employees = [emp for emp in self.employees if emp != "助勤"]  # 制限なしで全従業員表示
+        else:
+            # デフォルト従業員設定
+            target_employees = ["Aさん", "Bさん", "Cさん"]
+        
+        st.info(f"📊 設定対象従業員: {len(target_employees)}名（助勤除く）")
+        
+        if len(target_employees) > 20:
+            st.warning("⚠️ 従業員数が多いため、ページ分割表示を推奨します")
+            
+            # ページ分割機能
+            page_size = 10
+            total_pages = (len(target_employees) + page_size - 1) // page_size
+            current_page = st.selectbox("表示ページ", range(1, total_pages + 1), key="priority_page") - 1
+            start_idx = current_page * page_size
+            end_idx = min(start_idx + page_size, len(target_employees))
+            display_employees = target_employees[start_idx:end_idx]
+            
+            st.info(f"📄 ページ {current_page + 1}/{total_pages} - 従業員 {start_idx + 1}～{end_idx}名を表示")
+        else:
+            display_employees = target_employees
+        
+        for emp_name in display_employees:
+            st.subheader(f"👤 {emp_name}の優先度設定")
+            
+            emp_priorities = {}
+            cols = st.columns(len(duty_names))
+            
+            for i, duty_name in enumerate(duty_names):
+                with cols[i]:
+                    # 現在の設定をデフォルトに
+                    current_value = current_priorities.get(emp_name, {}).get(duty_name, 2)
+                    
+                    selected = st.selectbox(
+                        f"{duty_name}",
+                        priority_options,
+                        index=current_value,
+                        key=f"priority_{emp_name}_{duty_name}"
+                    )
+                    
+                    # 数値を抽出
+                    priority_value = int(selected.split(" ")[0])
+                    emp_priorities[duty_name] = priority_value
+                    
+                    # 色分け表示
+                    if priority_value == 3:
+                        st.success("✅ 最優先")
+                    elif priority_value == 2:
+                        st.info("🔵 普通")
+                    elif priority_value == 1:
+                        st.warning("🟡 可能")
+                    else:
+                        st.error("❌ 不可")
+            
+            new_priorities[emp_name] = emp_priorities
+            st.markdown("---")
+        
+        # 保存セクション
+        st.subheader("💾 設定保存")
+        
+        config_name = st.text_input(
+            "設定名",
+            value="新しい設定",
+            help="日本語名も使用可能です"
+        )
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("💾 一時保存", type="primary"):
+                # メモリに保存（セッション間のみ）
+                self.config_manager.update_employee_priorities(new_priorities)
+                st.success("✅ 一時保存しました（セッション間有効）")
         
         with col2:
-            if st.button("🔧 サイドバー表示", key="force_show_sidebar", use_container_width=True):
-                st.session_state.is_generating = False
-                st.session_state.show_gamification = False
-                st.success("サイドバーを表示しました")
-                st.rerun()
+            if st.button("📁 ファイル保存"):
+                if config_name.strip():
+                    filename = self.config_manager.save_config(config_name.strip(), new_priorities)
+                    if filename:
+                        st.success(f"✅ {filename}として保存しました")
+                    else:
+                        st.error("⚠ 保存に失敗しました")
+                else:
+                    st.error("設定名を入力してください")
         
         with col3:
-            # デバッグ情報トグル
-            show_debug = st.checkbox("🔍 状態表示", key="show_debug_info")
+            if st.button("🔄 デフォルトに戻す"):
+                default_priorities = self.config_manager.default_config["employee_priorities"]
+                self.config_manager.update_employee_priorities(default_priorities)
+                st.success("✅ デフォルト設定に戻しました")
+                st.rerun()
         
-        # デバッグ情報表示
-        if show_debug:
-            with st.expander("システム状態"):
-                st.write(f"**サイドバー制御状態:**")
-                st.write(f"- 生成中: {st.session_state.get('is_generating', False)}")
-                st.write(f"- ゲーム画面: {st.session_state.get('show_gamification', False)}")
-                st.write(f"- 設定画面: {st.session_state.get('show_config', False)}")
-                
-                # 状態が異常な場合の警告
-                if st.session_state.get('is_generating', False) and not st.session_state.get('show_gamification', False):
-                    st.warning("⚠️ 生成フラグがオンですが、ゲーム画面が無効です")
-                
-                # 全状態リセットボタン
-                if st.button("🔄 全状態リセット", key="reset_all_states"):
-                    for key in ['is_generating', 'show_gamification', 'solver_completed', 
-                               'show_results_screen', 'show_detailed_analysis']:
-                        if key in st.session_state:
-                            del st.session_state[key]
-                    st.success("全状態をリセットしました")
-                    st.rerun()
-        
-        # 生成中かつゲーミフィケーション有効時は完全にゲーム画面に切り替え
-        if st.session_state.get('is_generating', False) and st.session_state.get('show_gamification', False):
-            # サイドバーを完全非表示にしてゲーミフィケーション画面のみ表示
-            self._show_full_gamification_screen()
-        else:
-            # 通常の入力フォーム表示（サイドバー付き）
-            with st.sidebar:
-                self._create_sidebar()
+        # プレビューセクション
+        with st.expander("🔍 優先度マトリックスプレビュー"):
+            import pandas as pd
             
-            # メインエリア
-            col1, col2 = st.columns([2, 1])
+            # マトリックス作成
+            matrix_data = []
+            for emp_name in target_employees:
+                row = [emp_name]
+                emp_priorities = new_priorities.get(emp_name, {})
+                for duty_name in duty_names:
+                    priority = emp_priorities.get(duty_name, 2)
+                    row.append(f"{priority} ({['❌', '🟡', '🔵', '✅'][priority]})")
+                matrix_data.append(row)
             
-            with col1:
-                self._create_calendar_input()
+            df = pd.DataFrame(matrix_data, columns=["従業員"] + duty_names)
+            st.dataframe(df, use_container_width=True)
             
-            with col2:
-                self._create_control_panel()
+            st.info("📊 このマトリックスが勤務表生成時に反映されます")
     
-    def _create_minimal_sidebar(self):
-        """ゲーミフィケーション中のサイドバー（最小限設定）"""
+    def _main_page(self):
+        """メインページ"""
+        # サイドバー
+        with st.sidebar:
+            self._create_sidebar()
         
-        # 完了状態を確認
-        is_completed = st.session_state.get('solver_completed', False)
-        has_result = st.session_state.get('generation_result') is not None
+        # メインエリア
+        col1, col2 = st.columns([2, 1])
         
-        if is_completed and has_result:
-            # 完了状態の表示
-            st.markdown("# 🏆 ゲームクリア!")
-            result = st.session_state.generation_result
-            if result.get('success', False):
-                st.markdown("**✨ 最適化完了! ✨**")
-                st.success("完璧な勤務表が生成されました！")
-            else:
-                st.markdown("**⚠️ 最適化終了**")
-                st.warning("制約を満たす解が見つかりませんでした")
-        else:
-            # 実行中状態の表示
-            st.markdown("# 🎮 ゲーム実行中")
-            st.markdown("**最適化が進行中です...**")
+        with col1:
+            self._create_calendar_input()
         
-        # セッション状態から基本設定を取得（またはデフォルト値）
-        self.year = st.session_state.get('current_year', 2025)
-        self.month = st.session_state.get('current_month', 6)
-        self.n_days = calendar.monthrange(self.year, self.month)[1]
-        self.employees = st.session_state.get('current_employees', ["Aさん", "Bさん", "Cさん"])
-        self.prev_schedule_data = st.session_state.get('current_prev_schedule_data', {})
-        
-        # 現在の設定を表示
-        st.write(f"**対象月**: {self.year}年{self.month}月")
-        st.write(f"**従業員数**: {len(self.employees)}名")
-        
-        st.markdown("---")
-        
-        # 完了状態に応じてボタンを変更
-        if is_completed and has_result:
-            # 完了時のボタン
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("📊 結果を見る", type="primary", use_container_width=True, key="view_results_button_sidebar"):
-                    st.session_state.show_results_screen = True
-                    st.rerun()
-            with col2:
-                if st.button("🏠 ホーム", type="secondary", use_container_width=True, key="home_button_sidebar_completed"):
-                    self._reset_game_state()
-                    st.rerun()
-        else:
-            # 実行中のボタン
-            if st.button("🏠 設定画面に戻る", type="secondary", use_container_width=True, key="back_to_settings_button_sidebar"):
-                self._reset_game_state()
-                st.rerun()
-    
-    def _reset_game_state(self):
-        """ゲーム状態をリセット"""
-        st.session_state.is_generating = False
-        st.session_state.progress_data = []
-        st.session_state.solver_completed = False
-        st.session_state.show_results_screen = False
-        st.session_state.show_detailed_analysis = False
-        
-        # スレッド関連の状態もクリア
-        if 'solver_thread' in st.session_state:
-            del st.session_state.solver_thread
-        if 'solver_result' in st.session_state:
-            del st.session_state.solver_result
-        if 'progress_queue' in st.session_state:
-            del st.session_state.progress_queue
-        if 'generation_result' in st.session_state:
-            del st.session_state.generation_result
-    
-    def _show_full_gamification_screen(self):
-        """完全ゲーミフィケーション画面表示（スレッド安全版）"""
-        
-        # セッション状態から基本設定を取得（サイドバー非表示のため）
-        self.year = st.session_state.get('current_year', 2025)
-        self.month = st.session_state.get('current_month', 6)
-        self.n_days = calendar.monthrange(self.year, self.month)[1]
-        self.employees = st.session_state.get('current_employees', ["Aさん", "Bさん", "Cさん"])
-        self.prev_schedule_data = st.session_state.get('current_prev_schedule_data', {})
-        
-        # ページ全体のスタイル設定（サイドバー完全非表示）
-        st.markdown("""
-        <style>
-        .main > div {
-            padding-top: 1rem;
-        }
-        .stSidebar {
-            display: none !important;
-        }
-        .main .block-container {
-            padding-left: 1rem;
-            padding-right: 1rem;
-            max-width: none;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        # ヘッダー
-        st.markdown("# 🎮 勤務表最適化ゲーム")
-        st.markdown("### OR-Tools制約ソルバーが最適解を探索中...")
-        st.markdown("---")
-        
-        # 初期化
-        if 'gamification_state' not in st.session_state:
-            st.session_state.gamification_state = 'idle'  # idle, solving, completed, error
-            st.session_state.progress_data = []
-            st.session_state.start_time = time.time()
-            st.session_state.current_iteration = 0
-            st.session_state.current_objective = "準備中..."
-            st.session_state.current_gap = "計算中..."
-            st.session_state.current_quality = "🚀 STARTING"
-        
-        # コントロールエリア
-        control_col1, control_col2, control_col3, control_col4 = st.columns([3, 1, 1, 1])
-        
-        with control_col1:
-            progress_bar = st.progress(0, text="🚀 最適化進行中...")
-            status_text = st.empty()
-        
-        with control_col2:
-            if st.button("⏹️ 停止", type="secondary", use_container_width=True, key="stop_button_gamification"):
-                st.session_state.is_generating = False
-                st.session_state.gamification_state = 'completed'
-                st.rerun()
-        
-        with control_col3:
-            if st.button("🔄 リセット", type="secondary", use_container_width=True, key="reset_button_gamification"):
-                st.session_state.is_generating = False
-                st.session_state.gamification_state = 'idle'
-                st.session_state.progress_data = []
-                if 'generation_result' in st.session_state:
-                    del st.session_state.generation_result
-                st.rerun()
-        
-        with control_col4:
-            if st.button("🏠 ホーム", type="secondary", use_container_width=True, key="home_button_gamification_main"):
-                st.session_state.is_generating = False
-                st.session_state.gamification_state = 'idle'
-                st.session_state.progress_data = []
-                st.rerun()
-        
-        st.markdown("---")
-        
-        # ゲーミフィケーションメトリクス（大きく表示）
-        metrics_col1, metrics_col2, metrics_col3, metrics_col4 = st.columns(4)
-        
-        with metrics_col1:
-            metric_iteration = st.empty()
-        with metrics_col2:
-            metric_objective = st.empty()
-        with metrics_col3:
-            metric_gap = st.empty()
-        with metrics_col4:
-            metric_quality = st.empty()
-        
-        st.markdown("---")
-        
-        # 大型チャート表示エリア
-        chart_tab1, chart_tab2, chart_tab3 = st.tabs(["📈 目的関数値推移", "📊 最適性ギャップ", "🚨 制約違反状況"])
-        
-        with chart_tab1:
-            objective_chart = st.empty()
-        
-        with chart_tab2:
-            gap_chart = st.empty()
-        
-        with chart_tab3:
-            violation_chart = st.empty()
-        
-        # 結果表示画面かどうかをチェック
-        if st.session_state.get('show_results_screen', False):
-            self._show_gamification_results()
-            return
-        
-        # メインの状態管理（スレッド安全）
-        if st.session_state.gamification_state == 'idle':
-            # 最適化開始
-            st.session_state.gamification_state = 'solving'
-            st.session_state.solver_start_time = time.time()
-            st.rerun()
-            
-        elif st.session_state.gamification_state == 'solving':
-            # ソルバー実行（メインスレッドで同期実行）
-            if 'solver_started' not in st.session_state:
-                st.session_state.solver_started = True
-                
-                # *** 重要: ゲーミフィケーション版でも設定同期 ***
-                duty_location_count = st.session_state.get('duty_location_count', 3)
-                employee_count = st.session_state.get('employee_count', len(self.employees))
-                
-                # 勤務場所の自動調整
-                current_locations = self.location_manager.get_duty_names()
-                if len(current_locations) != duty_location_count:
-                    auto_locations = self._generate_duty_locations(duty_location_count)
-                    self._update_location_manager(auto_locations)
-                    st.info(f"🔄 勤務場所数を{duty_location_count}箇所に自動調整しました")
-                
-                # 従業員数の自動調整
-                if len(self.employees) != employee_count:
-                    self.employees = self._generate_employee_names(employee_count)
-                    st.session_state.current_employees = self.employees
-                    st.info(f"🔄 従業員数を{employee_count}名に自動調整しました")
-                
-                # *** 重要: エンジンを必ず再初期化 ***
-                st.info("🔧 ゲーミフィケーション用エンジンを再初期化中...")
-                self.engine = CompleteScheduleEngine(st.session_state.location_manager)
-                
-                # ソルバーを同期実行（メインスレッドで安全）
-                try:
-                    with st.spinner("制約満足問題を解いています..."):
-                        result = self.engine.solve_schedule(
-                            year=self.year,
-                            month=self.month,
-                            employee_names=self.employees,
-                            calendar_data=st.session_state.calendar_data,
-                            prev_schedule_data=self.prev_schedule_data,
-                            employee_restrictions=st.session_state.get('employee_restrictions', {})
-                        )
-                    
-                    st.session_state.generation_result = result
-                    st.session_state.gamification_state = 'completed'
-                    
-                    if result['success']:
-                        st.balloons()
-                        st.success("🎉 **完璧な勤務表が生成されました！** ゲームクリア！")
-                    else:
-                        st.error(f"❌ {result['error']}")
-                        
-                except Exception as e:
-                    st.session_state.generation_result = {
-                        'success': False,
-                        'error': f"エラー: {str(e)}"
-                    }
-                    st.session_state.gamification_state = 'error'
-                
-                st.rerun()
-            
-            # 進行中の表示（シミュレーション）
-            else:
-                elapsed_time = time.time() - st.session_state.get('solver_start_time', time.time())
-                
-                # 進捗シミュレーション
-                progress_percentage = min(elapsed_time / 10.0, 0.9)  # 10秒で90%
-                progress_bar.progress(progress_percentage, text="🔄 最適化中...")
-                
-                # メトリクス更新（シミュレーション）
-                simulated_iteration = int(elapsed_time * 2)  # 2回/秒
-                st.session_state.current_iteration = simulated_iteration
-                
-                metric_iteration.metric("🔄 反復回数", simulated_iteration, delta="+2")
-                metric_objective.metric("🎯 目的関数値", "計算中...")
-                metric_gap.metric("📊 最適性ギャップ", f"{max(100 - elapsed_time * 10, 1):.1f}%")
-                metric_quality.metric("⭐ 解の品質", "🔍 SEARCHING")
-                
-                status_text.markdown(f"**🔍 反復 {simulated_iteration}** - 制約満足問題を解いています...")
-                
-                # 1秒後に再更新
-                time.sleep(1)
-                st.rerun()
-        
-        elif st.session_state.gamification_state == 'completed':
-            # 完了表示
-            progress_bar.progress(1.0, text="🎉 最適化完了!")
-            
-            if st.session_state.get('generation_result'):
-                result = st.session_state.generation_result
-                
-                if result['success']:
-                    status_text.markdown("**🏆 最適化完了 - ゲームクリア！**")
-                    
-                    # 最終メトリクス
-                    metric_iteration.metric("🔄 反復回数", st.session_state.current_iteration)
-                    metric_objective.metric("🎯 目的関数値", "最適解")
-                    metric_gap.metric("📊 最適性ギャップ", "0.0%")
-                    metric_quality.metric("⭐ 解の品質", "🏆 PERFECT")
-                    
-                    # 完了時の大型メッセージ
-                    st.markdown("---")
-                    col1, col2, col3 = st.columns([1, 2, 1])
-                    with col2:
-                        st.markdown("## 🎊 おめでとうございます！")
-                        st.markdown("### 完璧な勤務表の生成に成功しました！")
-                        
-                        # 結果確認ボタン
-                        if st.button("🎯 結果を確認する", type="primary", use_container_width=True, key="view_results_button_completion"):
-                            st.session_state.show_results_screen = True
-                            st.rerun()
-                else:
-                    status_text.markdown("**⚠️ 最適化終了**")
-                    st.warning("制約を満たす解が見つかりませんでした")
-                    
-                    # エラー詳細表示
-                    st.error(result.get('error', '不明なエラー'))
-        
-        elif st.session_state.gamification_state == 'error':
-            # エラー表示
-            progress_bar.progress(0, text="❌ エラー発生")
-            status_text.markdown("**❌ 処理中にエラーが発生しました**")
-            
-            if st.session_state.get('generation_result'):
-                st.error(st.session_state.generation_result.get('error', '不明なエラー'))
-    
-    def _show_gamification_results(self):
-        """ゲーミフィケーション結果表示画面"""
-        
-        # 完了時のヘッダー
-        st.markdown("# 🏆 ゲームクリア！")
-        st.markdown("### 🎉 勤務表最適化ミッション完了")
-        st.markdown("---")
-        
-        # 結果を表示
-        if st.session_state.generation_result:
-            result = st.session_state.generation_result
-            if result['success']:
-                st.balloons()
-                st.success("✨ **完璧な勤務表が生成されました！** ✨")
-                
-                # 結果の詳細表示
-                self._show_results(result)
-                
-                # 追加のアクション
-                st.markdown("---")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if st.button("🔄 新しいゲーム", type="secondary", use_container_width=True, key="new_game_button_results"):
-                        self._reset_game_state()
-                        st.rerun()
-                
-                with col2:
-                    if st.button("🏠 ホーム", type="secondary", use_container_width=True, key="home_button_results"):
-                        self._reset_game_state()
-                        st.rerun()
-                
-                with col3:
-                    if st.button("📊 詳細分析", type="secondary", use_container_width=True, key="detailed_analysis_button_results"):
-                        st.session_state.show_detailed_analysis = True
-                        st.rerun()
-            else:
-                st.error(f"❌ {result['error']}")
-                self._show_debug_info(result.get('debug_info', []))
-    
-    def _cleanup_threading_state(self):
-        """スレッド関連の状態をクリーンアップ"""
-        # 危険なスレッド関連の状態を削除
-        cleanup_keys = [
-            'solver_thread', 'progress_queue', 'solver_result',
-            'solver_started', 'last_ui_update'
-        ]
-        
-        for key in cleanup_keys:
-            if key in st.session_state:
-                del st.session_state[key]
+        with col2:
+            self._create_control_panel()
     
     def _create_sidebar(self):
-        """サイドバー（レイアウト改善版）"""
+        """サイドバー（Phase 1: 設定管理対応）"""
         st.header("📋 基本設定")
+        
+        # Phase 1: 設定ファイル選択
+        st.subheader("📁 設定選択")
+        config_files = self.config_manager.get_config_files()
+        
+        if config_files:
+            selected_file = st.selectbox(
+                "設定ファイル",
+                ["--- 選択してください ---"] + config_files,
+                key="config_file_select"
+            )
+            
+            if selected_file != "--- 選択してください ---":
+                if st.button(f"📥 {selected_file}を読み込み"):
+                    if self.config_manager.load_config(selected_file):
+                        st.session_state.selected_config = selected_file
+                        # 従業員設定も強制更新
+                        employees = self.config_manager.get_employees()
+                        st.session_state.last_employees = employees.copy()
+                        # 関連データをクリア
+                        st.session_state.calendar_data = {}
+                        st.success(f"✅ {selected_file}を読み込みました")
+                        st.success(f"👥 従業員: {len(employees)}名 - {', '.join(employees[:5])}{'...' if len(employees) > 5 else ''}")
+                        st.rerun()
+                    else:
+                        st.error("❗ 設定の読み込みに失敗しました")
+        else:
+            st.info("設定ファイルがありません")
+        
+        # 現在の設定表示
+        if st.session_state.selected_config:
+            st.success(f"現在: {st.session_state.selected_config}")
+        
+        st.markdown("---")
         
         # 年月設定（最優先）
         self.year = st.number_input("年", value=2025, min_value=2020, max_value=2030)
@@ -2364,212 +1538,106 @@ class CompleteGUI:
         st.markdown("---")
         
         # 現在の勤務場所表示
-        # 更新フラグをチェックして最新状態を確保
-        if st.session_state.get('location_updated', False):
-            # 更新されたばかりなので最新の情報を表示
-            st.session_state.location_updated = False
-        
         duty_names = self.location_manager.get_duty_names()
-        current_duty_count = st.session_state.get('duty_location_count', 3)
-        
-        # session stateからも勤務場所を取得（バックアップ）
-        session_duty_names = st.session_state.get('current_duty_locations', [])
-        
-        # Session Stateを優先して使用（より確実）
-        display_duty_names = session_duty_names if session_duty_names else duty_names
-        
         st.write("**現在の勤務場所:**")
-        if len(display_duty_names) == 0:
-            st.write("• 勤務場所が設定されていません")
-            st.warning("「自動生成」ボタンで勤務場所を生成してください")
-        else:
-            for i, name in enumerate(display_duty_names):
-                st.write(f"• {name}")
+        for name in duty_names:
+            st.write(f"• {name}")
         
-        
-        # 設定との差異を表示
-        actual_count = len(display_duty_names)
-        if actual_count != current_duty_count:
-            st.info(f"💡 スライダー設定: {current_duty_count}箇所 → 「自動生成」で反映")
-        else:
-            st.caption(f"設定数: {current_duty_count}箇所")
-        
-        # デバッグ情報（一時的）
-        if st.session_state.get('update_timestamp'):
-            last_update = st.session_state.update_timestamp
-            st.caption(f"最終更新: {time.strftime('%H:%M:%S', time.localtime(last_update))}")
+        # Phase 1: 優先度設定ボタン
+        if st.button("🎯 優先度設定", use_container_width=True):
+            st.session_state.show_priority_settings = True
+            st.rerun()
         
         # 詳細設定ボタン（勤務場所の下に配置）
-        if st.button("⚙️ 詳細設定", use_container_width=True, key="detailed_settings_button"):
+        if st.button("⚙️ 詳細設定", use_container_width=True):
             st.session_state.show_config = True
             st.rerun()
         
         st.markdown("---")
         
-        # ゲーミフィケーション設定
-        st.header("🎮 ゲーミフィケーション設定")
-        show_gamification = st.toggle(
-            "最適化過程を可視化",
-            value=st.session_state.get('show_gamification', True),  # デフォルトをTrueに変更
-            help="OR-Toolsの制約解決過程をリアルタイムで表示します"
-        )
-        st.session_state.show_gamification = show_gamification
+        # 従業員設定
+        st.header("👥 従業員設定")
         
-        if show_gamification:
-            st.info("🏆 制約解決の進捗、目的関数値の推移、制約違反の改善状況をリアルタイムで表示します")
+        # 保存された従業員設定を取得（セッション状態優先）
+        if 'last_employees' in st.session_state and st.session_state.last_employees:
+            saved_employees = st.session_state.last_employees
         else:
-            st.info("📝 標準の勤務表作成機能のみ使用します")
+            saved_employees = self.config_manager.get_employees()
+            # セッション状態に保存
+            st.session_state.last_employees = saved_employees
         
-        st.markdown("---")
-        
-        # 動的従業員管理
-        st.header("👥 動的従業員管理")
-        
-        # スケール設定エリア
-        st.subheader("📊 規模設定")
-        
-        # 従業員数スライダー
-        employee_count = st.slider(
-            "従業員数",
-            min_value=3,
-            max_value=45,
-            value=st.session_state.get('employee_count', 8),
-            help="助勤を含む総従業員数を設定します（最大45名）"
+        employees_text = st.text_area(
+            "従業員名（1行に1名）", 
+            value="\n".join(saved_employees),
+            height=150,
+            help="変更後は下の保存ボタンを押してください"
         )
-        st.session_state.employee_count = employee_count
+        new_employees = [emp.strip() for emp in employees_text.split('\n') if emp.strip()]
         
-        # 勤務場所数スライダー  
-        duty_location_count = st.slider(
-            "勤務場所数",
-            min_value=2,
-            max_value=15,
-            value=st.session_state.get('duty_location_count', 3),
-            help="駅A、指令、警乗などの勤務場所数を設定します（最大15ポスト）"
-        )
+        # 従業員数チェック（最大50名まで）
+        if len(new_employees) > 50:
+            st.error("⚠️ 従業員は最大50名まで設定できます")
+            new_employees = new_employees[:50]
+        elif len(new_employees) < 2:
+            st.error("❌ 従業員は最低2名必要です（固定従業員+助勤）")
         
-        st.session_state.duty_location_count = duty_location_count
-        
-        # *** 修正: スライダー変更時の即座更新 ***
-        # 前回の値と比較して変更があった場合は即座に更新
-        last_duty_count = st.session_state.get('last_duty_count_immediate', duty_location_count)
-        if duty_location_count != last_duty_count:
-            # 勤務場所を即座に更新
-            auto_locations = self._generate_duty_locations(duty_location_count)
-            self._update_location_manager(auto_locations)
-            st.session_state.last_duty_count_immediate = duty_location_count
-            st.info(f"🔄 勤務場所数を{duty_location_count}箇所に自動更新しました")
-        
-        # 自動生成ボタン
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 自動生成", type="primary", use_container_width=True, key="auto_generate_employees"):
-                st.session_state.auto_generated = True
-                st.session_state.last_employee_count = employee_count
-                st.session_state.last_duty_count = duty_location_count
-                
-                # 勤務場所も同時に更新
-                auto_locations = self._generate_duty_locations(duty_location_count)
-                self._update_location_manager(auto_locations)
-                
-                st.success(f"✅ 従業員{employee_count}名・勤務場所{duty_location_count}箇所で生成しました")
-                st.rerun()
-        
-        with col2:
-            if st.button("⚙️ 詳細設定", use_container_width=True, key="detailed_workforce_config"):
-                st.session_state.show_workforce_config = not st.session_state.get('show_workforce_config', False)
-                st.rerun()
-        
-        # 自動生成された名前または手動編集
-        if st.session_state.get('auto_generated', False):
-            # 自動生成された従業員名
-            auto_employees = self._generate_employee_names(employee_count)
-            
-            st.subheader("✏️ 従業員名編集")
-            st.caption("自動生成された名前を編集できます")
-            
-            # 編集可能な従業員名入力フィールド
-            edited_employees = []
-            for i, name in enumerate(auto_employees):
-                if i == len(auto_employees) - 1:  # 最後は助勤
-                    edited_name = st.text_input(
-                        f"従業員 {i+1} (助勤)",
-                        value=name,
-                        key=f"employee_name_{i}",
-                        disabled=True,
-                        help="助勤は固定です"
-                    )
-                else:
-                    edited_name = st.text_input(
-                        f"従業員 {i+1}",
-                        value=name,
-                        key=f"employee_name_{i}",
-                        placeholder=f"{chr(65+i)}さん"
-                    )
-                edited_employees.append(edited_name.strip() if edited_name.strip() else name)
-            
-            new_employees = edited_employees
-            
-        else:
-            # 従来のテキストエリア方式（下位互換）
-            st.subheader("📝 手動設定")
-            default_employees = ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "Hさん"]
-            employees_text = st.text_area(
-                "従業員名（1行に1名）", 
-                value="\n".join(default_employees[:employee_count]),
-                height=120,
-                help="1行に1名ずつ入力してください"
-            )
-            new_employees = [emp.strip() for emp in employees_text.split('\n') if emp.strip()]
-        
-        # 従業員数チェックと人員不足警告
-        duty_locations_count = len(self.duty_names) if hasattr(self, 'duty_names') else 5
-        recommended_min = duty_locations_count * 3  # 勤務場所数 x 3人
-        recommended_max = duty_locations_count * 4  # 勤務場所数 x 4人
-        
-        if len(new_employees) > 45:
-            st.error("⚠️ 従業員は最大45名まで設定できます")
-            new_employees = new_employees[:45]
-        elif len(new_employees) < 3:
-            st.error("❌ 従業員は最低3名必要です（正規隊員のみ）")
-        elif len(new_employees) < recommended_min:
-            st.warning(f"⚠️ 人員不足の可能性: {duty_locations_count}つの勤務場所には{recommended_min}-{recommended_max}人が推奨です（現在{len(new_employees)}人）")
-            st.info("📊 人員不足時はスケジュール生成が困難になる場合があります")
-        elif len(new_employees) > recommended_max:
-            st.info(f"📊 {duty_locations_count}つの勤務場所には{recommended_min}-{recommended_max}人が最適です（現在{len(new_employees)}人）")
-        
-        # 統計情報表示
-        st.info(f"📊 従業員数: {len(new_employees)}名 | 勤務場所: {duty_location_count}箇所")
+        st.info(f"現在の従業員数: {len(new_employees)} / 50名")
         
         # 勤務体制の目安表示
-        if len(new_employees) >= 6:
-            estimated_coverage = (len(new_employees) - 2) // 2  # 助勤等除いて2名体制
-            st.success(f"💡 推定同時対応可能: {estimated_coverage}勤務 (2名体制)")
+        if len(new_employees) >= 30:
+            estimated_duties = (len(new_employees) - 5) // 3  # バッファ5名除いて3名体制
+            st.info(f"💡 推定対応可能勤務数: 約{estimated_duties}勤務（3名体制想定）")
         
-        # 大規模配置の警告
-        if len(new_employees) > 30 or duty_location_count > 12:
-            st.warning("⚠️ 大規模配置: 求解に最大3分かかる場合があります")
+        # 従業員保存機能
+        col1, col2, col3 = st.columns([1, 1, 2])
         
-        # 従業員リストが変更されたかチェック
+        with col1:
+            if st.button("💾 従業員設定を保存", type="primary"):
+                if len(new_employees) >= 2:
+                    # Config Managerに保存
+                    self.config_manager.update_employees(new_employees)
+                    
+                    # セッション状態を強制更新
+                    st.session_state.last_employees = new_employees.copy()
+                    st.session_state.calendar_data = {}
+                    
+                    # 設定ファイルに保存
+                    filename = self.config_manager.save_config("従業員設定_自動保存")
+                    if filename:
+                        st.success(f"✅ 従業員設定を保存しました ({filename})")
+                        st.success(f"👥 従業員数: {len(new_employees)}名")
+                    else:
+                        st.success("✅ 従業員設定を一時保存しました")
+                    
+                    # 保存後は saved_employees を更新
+                    saved_employees = new_employees.copy()
+                    st.rerun()
+                else:
+                    st.error("❌ 従業員は最低2名必要です")
+        
+        with col2:
+            if st.button("🔄 元に戻す"):
+                default_employees = self.config_manager.default_config["employees"].copy()
+                self.config_manager.current_config["employees"] = default_employees
+                st.session_state.last_employees = default_employees
+                st.success("✅ デフォルト従業員設定に戻しました")
+                st.rerun()
+        
+        # 従業員リストが変更されたかチェック（表示用）
         if 'last_employees' not in st.session_state:
-            st.session_state.last_employees = new_employees
-        elif st.session_state.last_employees != new_employees:
-            # 従業員リストが変更された場合、関連セッション状態をクリア
-            st.session_state.calendar_data = {}
-            st.session_state.last_employees = new_employees
-            st.success("✅ 従業員設定が更新されました。関連データをリセットしました。")
+            st.session_state.last_employees = saved_employees
         
-        self.employees = new_employees
+        # 現在の従業員を設定（保存されたものを使用）
+        self.employees = saved_employees
+        
+        # 変更がある場合の警告表示
+        if new_employees != saved_employees:
+            st.warning("⚠️ 従業員設定に変更があります。保存ボタンを押して保存してください。")
         
         # 前月末勤務設定
         st.header("🔄 前月末勤務情報")
         st.warning("⚠️ 前日勤務者は翌月1日目が自動的に非番になります")
         self.prev_schedule_data = self._create_prev_schedule_input(prev_month)
-        
-        # 設定値をセッション状態に保存（ゲーミフィケーション中にも使用可能にする）
-        st.session_state.current_year = self.year
-        st.session_state.current_month = self.month
-        st.session_state.current_employees = self.employees
-        st.session_state.current_prev_schedule_data = self.prev_schedule_data
     
     def _get_prev_month_info(self):
         """前月情報取得"""
@@ -2785,114 +1853,21 @@ class CompleteGUI:
             else:
                 st.write("**月またぎ制約**: なし")
         
-        # 制約診断機能
-        st.subheader("🔍 制約診断")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("📊 制約をチェック", type="secondary", use_container_width=True):
-                self._run_constraint_diagnosis()
-        
-        with col2:
-            if st.button("🔄 診断をクリア", type="secondary", use_container_width=True):
-                if 'constraint_diagnosis' in st.session_state:
-                    del st.session_state.constraint_diagnosis
-                st.rerun()
-        
-        # 診断結果表示
-        if st.session_state.get('constraint_diagnosis'):
-            self._display_constraint_diagnosis()
-        
-        # 従業員制約マトリックス
-        employee_restrictions = self._create_employee_restriction_matrix()
-        
-        # ストレステスト機能
-        self._add_stress_testing_controls()
-        
         # 生成ボタン
-        feasibility_score = st.session_state.get('constraint_diagnosis', {}).get('feasibility_score', 100)
-        
-        if feasibility_score >= 70:
-            button_text = "🚀 勤務表を生成"
-            button_type = "primary"
-        elif feasibility_score >= 30:
-            button_text = "⚠️ 警告ありで生成"
-            button_type = "secondary"
-        else:
-            button_text = "🚨 問題ありで強行"
-            button_type = "secondary"
-        
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            if st.button(button_text, type=button_type, use_container_width=True, key="generate_schedule_button"):
-                # 制約データをセッション状態に保存
-                st.session_state.employee_restrictions = employee_restrictions
-                self._generate_schedule()
-        
-        with col2:
-            if st.session_state.get('is_generating', False):
-                if st.button("🛑 停止", use_container_width=True, key="stop_generation"):
-                    st.session_state.is_generating = False
-                    st.warning("⚠️ 生成を停止しました")
+        if st.button("🚀 勤務表を生成", type="primary", use_container_width=True):
+            self._generate_schedule()
     
     def _generate_schedule(self):
-        """勤務表生成（ゲーミフィケーション対応・改良版）"""
-        
-        # ゲーミフィケーション表示の設定確認
-        show_gamification = st.session_state.get('show_gamification', False)
-        
-        # 生成中フラグを設定
-        if 'is_generating' not in st.session_state:
-            st.session_state.is_generating = False
-        
-        if not st.session_state.is_generating:
-            st.session_state.is_generating = True
-            st.session_state.generation_result = None
-            st.rerun()
-        
-        if show_gamification:
-            # ゲーミフィケーション付き実行
-            self._generate_schedule_with_gamification()
-        else:
-            # 通常実行
-            self._generate_schedule_normal()
-    
-    def _generate_schedule_normal(self):
-        """通常の勤務表生成（同期問題修正版）"""
+        """勤務表生成"""
         with st.spinner("勤務表を生成中..."):
             try:
-                # 生成前に設定を強制同期
-                duty_location_count = st.session_state.get('duty_location_count', 3)
-                employee_count = st.session_state.get('employee_count', len(self.employees))
-                
-                # 勤務場所の自動調整
-                current_locations = self.location_manager.get_duty_names()
-                if len(current_locations) != duty_location_count:
-                    auto_locations = self._generate_duty_locations(duty_location_count)
-                    self._update_location_manager(auto_locations)
-                    st.info(f"🔄 勤務場所数を{duty_location_count}箇所に自動調整しました")
-                
-                # 従業員数の自動調整
-                if len(self.employees) != employee_count:
-                    self.employees = self._generate_employee_names(employee_count)
-                    st.session_state.current_employees = self.employees
-                    st.info(f"🔄 従業員数を{employee_count}名に自動調整しました")
-                
-                # *** 重要: エンジンを必ず再初期化 ***
-                st.info("🔧 スケジュールエンジンを再初期化中...")
-                self.engine = CompleteScheduleEngine(st.session_state.location_manager)
-                
                 result = self.engine.solve_schedule(
                     year=self.year,
                     month=self.month,
                     employee_names=self.employees,
                     calendar_data=st.session_state.calendar_data,
-                    prev_schedule_data=self.prev_schedule_data,
-                    employee_restrictions=st.session_state.get('employee_restrictions', {})
+                    prev_schedule_data=self.prev_schedule_data
                 )
-                
-                st.session_state.generation_result = result
-                st.session_state.is_generating = False
                 
                 if result['success']:
                     st.success("✅ 勤務表が生成されました！")
@@ -2902,15 +1877,9 @@ class CompleteGUI:
                     self._show_debug_info(result.get('debug_info', []))
                     
             except Exception as e:
-                st.session_state.is_generating = False
                 st.error(f"❌ エラー: {str(e)}")
                 import traceback
                 st.code(traceback.format_exc())
-    
-    def _generate_schedule_with_gamification(self):
-        """ゲーミフィケーション機能付き勤務表生成（完全ゲーム化版）"""
-        # 完全ゲーミフィケーション画面に転送
-        self._show_full_gamification_screen()
     
     def _show_results(self, result):
         """結果表示（簡略表記版）"""
@@ -2930,7 +1899,7 @@ class CompleteGUI:
         for emp_id, emp_name in enumerate(employees):
             row = [emp_name]
             for day in range(min(15, n_days)):  # 最初の15日
-                assigned = "-"  # デフォルトを非番に変更
+                assigned = "?"
                 
                 # 勤務場所チェック
                 for duty_id, duty_name in enumerate(duty_names):
@@ -2938,17 +1907,17 @@ class CompleteGUI:
                         assigned = duty_name
                         break
                 
-                # 勤務場所が見つからなかった場合のみ、休暇・非番をチェック
-                if assigned == "-":
-                    # 休暇チェック
+                # 休暇チェック
+                if assigned == "?":
                     holiday_shift_id = len(duty_names)
                     if solver.Value(w[emp_id, day, holiday_shift_id]):
                         assigned = "休"  # 簡略表記
-                    # 非番チェック
-                    elif hasattr(self.engine, 'OFF_SHIFT_ID') and self.engine.OFF_SHIFT_ID is not None:
-                        off_shift_id = self.engine.OFF_SHIFT_ID
-                        if solver.Value(w[emp_id, day, off_shift_id]):
-                            assigned = "-"  # 簡略表記
+                
+                # 非番チェック
+                if assigned == "?":
+                    off_shift_id = self.engine.OFF_SHIFT_ID
+                    if solver.Value(w[emp_id, day, off_shift_id]):
+                        assigned = "-"  # 簡略表記
                 
                 row.append(assigned)
             
@@ -2975,30 +1944,10 @@ class CompleteGUI:
         st.subheader("📁 Excel出力")
         
         try:
-            # 一時ファイルでExcel生成（改善版）
-            temp_path = None
-            excel_data = None
-            
-            try:
-                # 一時ファイル作成
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
-                    temp_path = tmp_file.name
+            # 一時ファイルでExcel生成
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+                excel_path = self.excel_exporter.create_excel_file(tmp_file.name, result)
                 
-                st.info("📊 Excel生成中...")
-                
-                # Excel ファイル生成
-                excel_path = self.excel_exporter.create_excel_file(temp_path, result)
-                
-                # ファイルの存在確認
-                if not os.path.exists(excel_path):
-                    raise FileNotFoundError(f"Excel ファイルが生成されませんでした: {excel_path}")
-                
-                # ファイルサイズ確認
-                file_size_bytes = os.path.getsize(excel_path)
-                if file_size_bytes == 0:
-                    raise ValueError("Excel ファイルのサイズが 0 バイトです")
-                
-                # ファイル読み取り
                 with open(excel_path, 'rb') as f:
                     excel_data = f.read()
                 
@@ -3006,8 +1955,8 @@ class CompleteGUI:
                 filename = f"勤務表_{self.year}年{self.month:02d}月_完全版.xlsx"
                 
                 # ファイルサイズ表示
-                file_size_kb = file_size_bytes / 1024  # KB
-                st.success(f"✅ Excel生成完了 (サイズ: {file_size_kb:.1f} KB)")
+                file_size = len(excel_data) / 1024  # KB
+                st.info(f"📊 Excel生成完了 (サイズ: {file_size:.1f} KB)")
                 
                 # ダウンロードボタン（2つの方法）
                 col1, col2 = st.columns(2)
@@ -3026,13 +1975,8 @@ class CompleteGUI:
                     # 代替ダウンロード方法の説明
                     st.info("💡 ダウンロードできない場合は、ブラウザの設定でダウンロードを許可してください")
                 
-            finally:
-                # 一時ファイル削除（確実に実行）
-                if temp_path and os.path.exists(temp_path):
-                    try:
-                        os.unlink(temp_path)
-                    except Exception as cleanup_error:
-                        print(f"Warning: 一時ファイル削除に失敗: {cleanup_error}")
+                # 一時ファイル削除
+                os.unlink(excel_path)
                 
                 st.success("✅ Excel勤務表が正常に生成されました")
                 st.markdown("**含まれるシート:**")
@@ -3097,271 +2041,6 @@ class CompleteGUI:
                     st.info(info)
         else:
             st.info("デバッグ情報はありません")
-    
-    def _generate_employee_names(self, count):
-        """自動従業員名生成 (A-san, B-san, etc.) - 全員正規隊員"""
-        names = []
-        for i in range(count):  # 全員が正規隊員
-            if i < 26:
-                # A-Z
-                names.append(f"{chr(65 + i)}さん")
-            else:
-                # AA, BB, CC...
-                letter = chr(65 + (i - 26) % 26)
-                names.append(f"{letter}{letter}さん")
-        return names
-    
-    def _generate_duty_locations(self, count):
-        """自動勤務場所生成（最大15ポスト対応）"""
-        base_locations = [
-            {"name": "駅A", "type": "一徹勤務", "duration": 16, "color": "#FF6B6B"},
-            {"name": "指令", "type": "一徹勤務", "duration": 16, "color": "#FF8E8E"},
-            {"name": "警乗", "type": "一徹勤務", "duration": 16, "color": "#FFB6B6"},
-            {"name": "駅B", "type": "一徹勤務", "duration": 16, "color": "#FFA8A8"},
-            {"name": "本社", "type": "一徹勤務", "duration": 16, "color": "#FF9999"},
-            {"name": "支所", "type": "一徹勤務", "duration": 16, "color": "#FFAAAA"},
-            {"name": "車両", "type": "一徹勤務", "duration": 16, "color": "#FFBBBB"},
-            {"name": "施設", "type": "一徹勤務", "duration": 16, "color": "#FFCCCC"},
-            {"name": "巡回", "type": "一徹勤務", "duration": 16, "color": "#FFDDDD"},
-            {"name": "監視", "type": "一徹勤務", "duration": 16, "color": "#FFEEEE"},
-            {"name": "駅C", "type": "一徹勤務", "duration": 16, "color": "#FFE5E5"},
-            {"name": "駅D", "type": "一徹勤務", "duration": 16, "color": "#FFDADA"},
-            {"name": "管制", "type": "一徹勤務", "duration": 16, "color": "#FFCFCF"},
-            {"name": "検査", "type": "一徹勤務", "duration": 16, "color": "#FFC4C4"},
-            {"name": "整備", "type": "一徹勤務", "duration": 16, "color": "#FFB9B9"}
-        ]
-        return base_locations[:count]
-    
-    def _update_location_manager(self, locations):
-        """勤務場所マネージャーを更新（制約マトリックス自動調整付き）"""
-        old_duty_count = len(self.location_manager.get_duty_locations())
-        new_duty_count = len(locations)
-        
-        # インスタンスと session state 両方を更新
-        self.location_manager.duty_locations = locations
-        st.session_state.location_manager.duty_locations = locations
-        
-        # バックアップ用の session state も更新
-        st.session_state.current_duty_locations = [loc["name"] for loc in locations]
-        st.session_state.current_duty_count = len(locations)
-        
-        # *** 重要: 制約マトリックスを自動調整 ***
-        self._auto_adjust_restriction_matrix(old_duty_count, new_duty_count)
-        
-        # 更新フラグをセット
-        st.session_state.location_updated = True
-        st.session_state.update_timestamp = time.time()
-        
-        # ユーザーフィードバック
-        if new_duty_count > old_duty_count:
-            added_count = new_duty_count - old_duty_count
-            st.success(f"✅ 勤務場所を{added_count}箇所追加しました。新規勤務場所は全従業員で勤務可能に設定されています。")
-        elif new_duty_count < old_duty_count:
-            removed_count = old_duty_count - new_duty_count
-            st.info(f"ℹ️ 勤務場所を{removed_count}箇所削除しました。制約マトリックスも自動調整されました。")
-    
-    def _auto_adjust_restriction_matrix(self, old_count, new_count):
-        """制約マトリックスを勤務場所の増減に合わせて自動調整"""
-        
-        # 従業員数を安全に取得
-        current_employees = getattr(self, 'employees', None)
-        if not current_employees:
-            # self.employeesが未設定の場合はセッション状態から取得
-            current_employees = st.session_state.get('current_employees', [])
-        
-        if not current_employees:
-            # どちらも取得できない場合はデフォルト従業員数を使用
-            employee_count = st.session_state.get('employee_count', 8)
-            current_employees = self._generate_employee_names(employee_count)
-        
-        if new_count > old_count:
-            # 勤務場所が増えた場合：新しい勤務場所は全従業員で勤務可能にする
-            for emp_idx in range(len(current_employees)):  # 全員が正規隊員
-                for duty_idx in range(old_count, new_count):
-                    restriction_key = f'restriction_{emp_idx}_{duty_idx}'
-                    # 新規勤務場所はデフォルトで勤務可能（True）
-                    if restriction_key not in st.session_state:
-                        st.session_state[restriction_key] = True
-        
-        elif new_count < old_count:
-            # 勤務場所が減った場合：余分な制約キーを削除
-            keys_to_remove = []
-            for key in st.session_state.keys():
-                if key.startswith('restriction_'):
-                    try:
-                        _, emp_idx_str, duty_idx_str = key.split('_')
-                        duty_idx = int(duty_idx_str)
-                        if duty_idx >= new_count:
-                            keys_to_remove.append(key)
-                    except (ValueError, IndexError):
-                        continue
-            
-            for key in keys_to_remove:
-                del st.session_state[key]
-    
-    def _create_employee_restriction_matrix(self):
-        """従業員-勤務場所制約マトリックス作成（自動調整対応）"""
-        if not st.session_state.get('show_workforce_config', False):
-            return {}
-        
-        st.header("🚫 勤務制約マトリックス")
-        
-        # 勤務場所の自動調整状況を表示
-        if st.session_state.get('location_updated', False):
-            st.success("✅ 勤務場所の変更に合わせて制約マトリックスが自動調整されました")
-        
-        st.caption("チェックを外すと該当従業員はその勤務場所に配置されません")
-        st.caption("💡 新規勤務場所は全従業員で勤務可能として自動設定されます")
-        
-        # *** 修正: 最新の勤務場所リストを強制取得 ***
-        # session_stateから最新の勤務場所リストを取得
-        if hasattr(st.session_state, 'location_manager') and st.session_state.location_manager:
-            duty_names = st.session_state.location_manager.get_duty_names()
-        else:
-            duty_names = self.location_manager.get_duty_names()
-        
-        # さらに安全のため、session_stateのバックアップからも確認
-        if st.session_state.get('current_duty_locations'):
-            duty_names = st.session_state.current_duty_locations
-        
-        # デバッグ情報表示
-        st.caption(f"📍 現在の勤務場所数: {len(duty_names)}箇所 - {', '.join(duty_names)}")
-        
-        restrictions = {}
-        
-        # マトリックス表示
-        for emp_idx, employee in enumerate(self.employees):  # 全員が正規隊員
-            st.subheader(f"👤 {employee}")
-            restrictions[employee] = {}
-            
-            # 勤務場所ごとのチェックボックス
-            cols = st.columns(min(len(duty_names), 4))  # 最大4列
-            for duty_idx, duty_name in enumerate(duty_names):
-                col_idx = duty_idx % 4
-                with cols[col_idx]:
-                    # デフォルトは全ての勤務場所で勤務可能
-                    can_work = st.checkbox(
-                        f"{duty_name}",
-                        value=st.session_state.get(f'restriction_{emp_idx}_{duty_idx}', True),
-                        key=f'restriction_{emp_idx}_{duty_idx}',
-                        help=f"{employee}が{duty_name}で勤務可能かどうか"
-                    )
-                    restrictions[employee][duty_name] = can_work
-            
-            # 各従業員の制約サマリー
-            restricted_duties = [duty for duty, allowed in restrictions[employee].items() if not allowed]
-            if restricted_duties:
-                st.warning(f"⚠️ {employee}: {', '.join(restricted_duties)} 勤務不可")
-            else:
-                st.success(f"✅ {employee}: 全勤務場所で勤務可能")
-        
-        return restrictions
-    
-    def _add_stress_testing_controls(self):
-        """ストレステスト機能追加"""
-        if st.session_state.get('show_workforce_config', False):
-            st.header("🧪 ストレステスト")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("⚡ 高負荷テスト", use_container_width=True, key="stress_test_high"):
-                    self._run_stress_test("high")
-                    
-                if st.button("🔄 反復テスト", use_container_width=True, key="stress_test_iterative"):
-                    self._run_stress_test("iterative")
-            
-            with col2:
-                if st.button("🎯 制約限界テスト", use_container_width=True, key="stress_test_constraints"):
-                    self._run_stress_test("constraints")
-                    
-                if st.button("📊 パフォーマンス測定", use_container_width=True, key="stress_test_performance"):
-                    self._run_stress_test("performance")
-    
-    def _run_stress_test(self, test_type):
-        """ストレステスト実行"""
-        st.session_state.stress_test_running = True
-        st.session_state.stress_test_type = test_type
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        results_container = st.empty()
-        
-        import time
-        start_time = time.time()
-        
-        if test_type == "high":
-            status_text.text("🔥 高負荷テスト実行中...")
-            # 最大規模でのテスト
-            test_scenarios = [
-                (45, 15, "最大規模"),
-                (35, 12, "超大規模"),
-                (25, 10, "大規模"),
-                (15, 8, "中規模"),
-                (8, 4, "小規模")
-            ]
-            
-            for i, (emp_count, loc_count, desc) in enumerate(test_scenarios):
-                progress_bar.progress((i + 1) * 25)
-                status_text.text(f"🔥 {desc}テスト中... ({emp_count}名, {loc_count}箇所)")
-                time.sleep(0.5)  # シミュレーション
-            
-        elif test_type == "iterative":
-            status_text.text("🔄 反復テスト実行中...")
-            # 複数回実行してのパフォーマンステスト
-            iterations = 10
-            for i in range(iterations):
-                progress_bar.progress((i + 1) * 10)
-                status_text.text(f"🔄 反復テスト {i+1}/{iterations}")
-                time.sleep(0.3)
-            
-        elif test_type == "constraints":
-            status_text.text("🎯 制約限界テスト実行中...")
-            # 極端な制約条件でのテスト
-            constraint_tests = [
-                "全員有休希望",
-                "制約マトリックス50%禁止",
-                "月またぎ全員勤務",
-                "三徹制約極限"
-            ]
-            
-            for i, test_name in enumerate(constraint_tests):
-                progress_bar.progress((i + 1) * 25)
-                status_text.text(f"🎯 {test_name}テスト中...")
-                time.sleep(0.8)
-            
-        elif test_type == "performance":
-            status_text.text("📊 パフォーマンス測定中...")
-            # 実行時間とメモリ使用量の測定
-            metrics = ["CPU使用率", "メモリ使用量", "求解時間", "制約数"]
-            
-            for i, metric in enumerate(metrics):
-                progress_bar.progress((i + 1) * 25)
-                status_text.text(f"📊 {metric}測定中...")
-                time.sleep(0.6)
-        
-        elapsed_time = time.time() - start_time
-        status_text.text(f"✅ {test_type} テスト完了 ({elapsed_time:.1f}秒)")
-        
-        # テスト結果表示
-        with results_container.container():
-            st.success(f"🎉 {test_type} ストレステストが完了しました")
-            
-            # 疑似結果表示
-            if test_type == "high":
-                st.metric("最大処理規模", "45名 × 15箇所", "✅ 成功")
-                st.metric("平均求解時間", "147秒", "📈 3分以内")
-            elif test_type == "iterative":
-                st.metric("平均実行時間", "8.7秒", "📊 安定")
-                st.metric("成功率", "100%", "✅ 完璧")
-            elif test_type == "constraints":
-                st.metric("制約充足率", "98.5%", "🎯 優秀")
-                st.metric("緩和レベル", "平均 1.2", "⚖️ 軽微")
-            elif test_type == "performance":
-                st.metric("CPU効率", "85%", "⚡ 高効率")
-                st.metric("メモリ使用量", "125MB", "💾 軽量")
-        
-        st.session_state.stress_test_running = False
 
 
 # =================== メイン実行 ===================
@@ -3374,40 +2053,27 @@ def main():
         
         # フッター
         st.markdown("---")
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.markdown("💡 **完全版**: 前月末勤務情報を考慮した月またぎ制約が完璧に動作します")
-            st.markdown("🎯 **重要**: Aさんが31日B勤務 → 1日目は自動的に非番になります")
-        with col2:
-            st.markdown(f"""
-            <div style='text-align: right; margin-top: 10px;'>
-                <span style='color: #666; font-size: 12px;'>
-                    System Version: {SYSTEM_VERSION}<br>
-                    Build: {SYSTEM_BUILD_DATE}
-                </span>
-            </div>
-            """, unsafe_allow_html=True)
+        st.markdown("💡 **Phase 1**: 優先度設定と設定保存機能が完全動作します")
+        st.markdown("🎯 **重要**: 優先度が勤務表に反映され、設定保存で再利用可能です")
         
         # システム情報
         with st.expander("ℹ️ システム情報"):
-            st.write("**機能一覧**:")
-            st.write("- ✅ **月またぎ制約（完全版）**: 前日勤務→翌月1日非番")
-            st.write("- ✅ **複数勤務場所対応**: 駅A、指令、警乗等の独立管理")
-            st.write("- ✅ **非番自動処理**: 勤務翌日は自動的に非番")
-            st.write("- ✅ **複数日選択**: チェックボックスで飛び飛び選択")
-            st.write("- ✅ **二徹・三徹防止**: 段階的制約緩和")
-            st.write("- ✅ **Excel色分け出力**: 完全な色分け分析")
-            st.write("- ✅ **リアルタイム制約チェック**: 前月末勤務の即座検証")
-            st.write("- 🆕 **動的従業員管理**: スライダー式スケール調整")
-            st.write("- 🆕 **従業員制約マトリックス**: 個別勤務場所制限")
-            st.write("- 🆕 **ストレステスト機能**: 高負荷・パフォーマンステスト")
-            st.write("- ⚡ **リアルタイム勤務場所更新**: スライダー変更で即時反映")
-            st.write("- 🚀 **大規模対応**: 最大45名×15ポスト（3分上限）")
-            st.write("- 🎛️ **操作性改善**: ボタン押下で反映（v3.6）")
+            st.write("**Phase 1 機能一覧**:")
+            st.write("- ✅ **優先度設定**: 3人分の勤務場所優先度設定")
+            st.write("- ✅ **設定保存/読み込み**: JSONファイルで設定管理")
+            st.write("- ✅ **月またぎ制約**: 前日勤務→翌月１日非番")
+            st.write("- ✅ **複数勤務場所対応**: 駅A、指令、警乗等")
+            st.write("- ✅ **Excel色分け出力**: 優先度反映表示")
+            
+            st.write("**優先度システム**:")
+            st.write("- ✅ **最優先(3)**: ペナルティなし")
+            st.write("- 🔵 **普通(2)**: 小ペナルティ")
+            st.write("- 🟡 **可能(1)**: 軽微ペナルティ")
+            st.write("- ❌ **不可(0)**: 高ペナルティ")
             
             st.write("**色分け説明**:")
             st.write("- 🟡 **黄色**: 有休実現")
-            st.write("- 🔴 **ピンク**: 有休希望なのに勤務（違反）")
+            st.write("- 🔴 **ピンク**: 有休希望なのに勤務")
             st.write("- 🔵 **青色**: 助勤勤務")
             st.write("- 🟠 **オレンジ**: シフト希望未実現")
             st.write("- 🟣 **紫色**: 月またぎ制約による配置")

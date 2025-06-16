@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-勤務表自動作成システム 完全版 (2025/6/16更新)
+勤務表自動作成システム 完全版
 - 月またぎ制約完全対応（前月末勤務処理）
 - 複数勤務場所対応（駅A、指令、警乗等）
 - 非番自動処理
@@ -39,6 +39,7 @@ class ConfigurationManager:
                 {"name": "警乗", "type": "一徹勤務", "duration": 16, "color": "#FFB6B6"}
             ],
             "holiday_type": {"name": "休暇", "color": "#FFEAA7"},
+            "employees": ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "助勤"],
             "employee_priorities": {
                 "Aさん": {"駅A": 3, "指令": 2, "警乗": 0},
                 "Bさん": {"駅A": 3, "指令": 3, "警乗": 3},
@@ -122,6 +123,14 @@ class ConfigurationManager:
     def update_employee_priorities(self, priorities):
         """従業員優先度更新"""
         self.current_config["employee_priorities"] = priorities
+    
+    def get_employees(self):
+        """従業員リスト取得"""
+        return self.current_config.get("employees", ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "助勤"])
+    
+    def update_employees(self, employees):
+        """従業員リスト更新"""
+        self.current_config["employees"] = employees
 
 
 class WorkLocationManager:
@@ -143,11 +152,15 @@ class WorkLocationManager:
         # 設定初期化
         if self.config_manager:
             work_locations = self.config_manager.get_work_locations()
-            self.duty_locations = work_locations
+            self.duty_locations = work_locations.copy()  # コピーを作成
             self.holiday_type = self.config_manager.current_config.get("holiday_type", self.default_config["holiday_type"])
         else:
-            self.duty_locations = self.default_config["duty_locations"].copy()
-            self.holiday_type = self.default_config["holiday_type"].copy()
+            # ファイルから直接読み込み試行
+            if os.path.exists("work_locations.json"):
+                self.load_config()
+            else:
+                self.duty_locations = self.default_config["duty_locations"].copy()
+                self.holiday_type = self.default_config["holiday_type"].copy()
     
     def get_duty_locations(self):
         """勤務場所一覧取得"""
@@ -163,17 +176,26 @@ class WorkLocationManager:
     
     def add_duty_location(self, name, duty_type, duration, color):
         """勤務場所追加"""
-        self.duty_locations.append({
+        new_location = {
             "name": name,
             "type": duty_type,
             "duration": duration,
             "color": color
-        })
+        }
+        self.duty_locations.append(new_location)
+        
+        # Config Managerにも反映
+        if self.config_manager:
+            self.config_manager.current_config["work_locations"] = self.duty_locations.copy()
     
     def remove_duty_location(self, index):
         """勤務場所削除"""
         if 0 <= index < len(self.duty_locations):
             del self.duty_locations[index]
+            
+            # Config Managerにも反映
+            if self.config_manager:
+                self.config_manager.current_config["work_locations"] = self.duty_locations.copy()
     
     def update_duty_location(self, index, name, duty_type, duration, color):
         """勤務場所更新"""
@@ -184,6 +206,10 @@ class WorkLocationManager:
                 "duration": duration,
                 "color": color
             }
+            
+            # Config Managerにも反映
+            if self.config_manager:
+                self.config_manager.current_config["work_locations"] = self.duty_locations.copy()
     
     def reset_to_default(self):
         """デフォルト設定に戻す"""
@@ -196,19 +222,44 @@ class WorkLocationManager:
             "duty_locations": self.duty_locations[:15],  # 最大15勤務まで
             "holiday_type": self.holiday_type
         }
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            print(f"✅ 設定を {filename} に保存しました")
+            return True
+        except Exception as e:
+            print(f"❌ 設定保存エラー: {e}")
+            return False
     
     def load_config(self, filename="work_locations.json"):
         """設定読み込み"""
         try:
             with open(filename, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-                self.duty_locations = config.get("duty_locations", self.default_config["duty_locations"])
+                # 重複を削除して読み込み
+                duty_locations = config.get("duty_locations", self.default_config["duty_locations"])
+                self.duty_locations = self._remove_duplicates(duty_locations)
                 self.holiday_type = config.get("holiday_type", self.default_config["holiday_type"])
+                
+                # Config Managerにも反映
+                if self.config_manager:
+                    self.config_manager.current_config["work_locations"] = self.duty_locations.copy()
+                
                 return True
-        except:
+        except Exception as e:
+            print(f"設定読み込みエラー: {e}")
             return False
+    
+    def _remove_duplicates(self, duty_locations):
+        """重複する勤務場所を削除"""
+        seen_names = set()
+        unique_locations = []
+        for location in duty_locations:
+            name = location.get("name", "")
+            if name and name not in seen_names:
+                seen_names.add(name)
+                unique_locations.append(location)
+        return unique_locations
 
 
 # =================== 完全版エンジン ===================
@@ -1108,14 +1159,28 @@ class CompleteGUI:
             st.session_state.selected_config = None
         if 'show_priority_settings' not in st.session_state:
             st.session_state.show_priority_settings = False
+        if 'last_employees' not in st.session_state:
+            st.session_state.last_employees = self.config_manager.get_employees()
         
         # デフォルト設定読み込み
         config_files = self.config_manager.get_config_files()
         if 'default.json' in config_files:
             self.config_manager.load_config('default.json')
+        else:
+            # デフォルト設定ファイルがない場合は作成
+            default_filename = self.config_manager.save_config("デフォルト設定")
+            if default_filename:
+                print(f"✅ デフォルト設定ファイルを作成しました: {default_filename}")
         
         # 既存互換性維持
         self.location_manager.load_config()
+        
+        # 設定の初期読み込み後に重複除去と保存
+        if len(self.location_manager.duty_locations) != len(set(loc["name"] for loc in self.location_manager.duty_locations)):
+            # 重複が検出された場合、クリーンアップして保存
+            self.location_manager.duty_locations = self.location_manager._remove_duplicates(self.location_manager.duty_locations)
+            self.location_manager.save_config()
+            print("✅ 重複した勤務場所を削除してクリーンアップしました")
     
     def run(self):
         """メイン実行"""
@@ -1204,10 +1269,13 @@ class CompleteGUI:
             
             with col5:
                 if st.button("🗑️", key=f"delete_{i}"):
+                    location_name = location["name"]
                     self.location_manager.remove_duty_location(i)
-                    self.location_manager.save_config()  # 即座に保存
-                    st.success(f"勤務場所 {i+1} を削除しました")
-                    st.rerun()
+                    if self.location_manager.save_config():
+                        st.success(f"「{location_name}」を削除しました")
+                        st.rerun()
+                    else:
+                        st.error("削除に失敗しました")
             
             # 変更があったかチェック
             if (new_name != location["name"] or 
@@ -1222,27 +1290,40 @@ class CompleteGUI:
         # 変更があった場合は自動保存
         if changes_made:
             self.location_manager.save_config()
+            st.success("✅ 変更を自動保存しました")
         
         # 新規追加（最大15まで）
         if len(duty_locations) < 15:
             st.subheader("新規勤務場所追加")
-            col1, col2, col3, col4, col5 = st.columns([2, 2, 1, 1, 1])
             
-            with col1:
-                add_name = st.text_input("新しい勤務場所名", key="add_name")
-            with col2:
-                add_type = st.selectbox("勤務タイプ", ["一徹勤務", "日勤", "夜勤", "その他"], key="add_type")
-            with col3:
-                add_duration = st.number_input("時間", min_value=1, max_value=24, value=16, key="add_duration")
-            with col4:
-                add_color = st.color_picker("色", value="#45B7D1", key="add_color")
-            with col5:
-                if st.button("➕ 追加"):
+            # フォームを使用してセッション状態の問題を回避
+            with st.form("add_location_form"):
+                col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+                
+                with col1:
+                    add_name = st.text_input("新しい勤務場所名")
+                with col2:
+                    add_type = st.selectbox("勤務タイプ", ["一徹勤務", "日勤", "夜勤", "その他"])
+                with col3:
+                    add_duration = st.number_input("時間", min_value=1, max_value=24, value=16)
+                with col4:
+                    add_color = st.color_picker("色", value="#45B7D1")
+                
+                submitted = st.form_submit_button("➕ 追加", use_container_width=True)
+                
+                if submitted:
                     if add_name.strip():
-                        self.location_manager.add_duty_location(add_name.strip(), add_type, add_duration, add_color)
-                        self.location_manager.save_config()  # 即座に保存
-                        st.success(f"「{add_name}」を追加しました")
-                        st.rerun()
+                        # 重複チェック
+                        existing_names = [loc["name"] for loc in self.location_manager.duty_locations]
+                        if add_name.strip() in existing_names:
+                            st.error(f"「{add_name}」は既に存在します")
+                        else:
+                            self.location_manager.add_duty_location(add_name.strip(), add_type, add_duration, add_color)
+                            if self.location_manager.save_config():
+                                st.success(f"「{add_name}」を追加しました")
+                                st.rerun()
+                            else:
+                                st.error("保存に失敗しました")
                     else:
                         st.error("勤務場所名を入力してください")
         else:
@@ -1274,10 +1355,35 @@ class CompleteGUI:
         # 新しい優先度設定を格納
         new_priorities = {}
         
-        # Phase 1: 3人のみ設定可能
-        target_employees = ["Aさん", "Bさん", "Cさん"]
+        # 動的な従業員設定（助勤除く）
+        # セッション状態から従業員リストを取得
+        if 'last_employees' in st.session_state and st.session_state.last_employees:
+            all_employees = st.session_state.last_employees
+            target_employees = [emp for emp in all_employees if emp != "助勤"]  # 制限なしで全従業員表示
+        elif hasattr(self, 'employees') and self.employees:
+            target_employees = [emp for emp in self.employees if emp != "助勤"]  # 制限なしで全従業員表示
+        else:
+            # デフォルト従業員設定
+            target_employees = ["Aさん", "Bさん", "Cさん"]
         
-        for emp_name in target_employees:
+        st.info(f"📊 設定対象従業員: {len(target_employees)}名（助勤除く）")
+        
+        if len(target_employees) > 20:
+            st.warning("⚠️ 従業員数が多いため、ページ分割表示を推奨します")
+            
+            # ページ分割機能
+            page_size = 10
+            total_pages = (len(target_employees) + page_size - 1) // page_size
+            current_page = st.selectbox("表示ページ", range(1, total_pages + 1), key="priority_page") - 1
+            start_idx = current_page * page_size
+            end_idx = min(start_idx + page_size, len(target_employees))
+            display_employees = target_employees[start_idx:end_idx]
+            
+            st.info(f"📄 ページ {current_page + 1}/{total_pages} - 従業員 {start_idx + 1}～{end_idx}名を表示")
+        else:
+            display_employees = target_employees
+        
+        for emp_name in display_employees:
             st.subheader(f"👤 {emp_name}の優先度設定")
             
             emp_priorities = {}
@@ -1400,7 +1506,13 @@ class CompleteGUI:
                 if st.button(f"📥 {selected_file}を読み込み"):
                     if self.config_manager.load_config(selected_file):
                         st.session_state.selected_config = selected_file
+                        # 従業員設定も強制更新
+                        employees = self.config_manager.get_employees()
+                        st.session_state.last_employees = employees.copy()
+                        # 関連データをクリア
+                        st.session_state.calendar_data = {}
                         st.success(f"✅ {selected_file}を読み込みました")
+                        st.success(f"👥 従業員: {len(employees)}名 - {', '.join(employees[:5])}{'...' if len(employees) > 5 else ''}")
                         st.rerun()
                     else:
                         st.error("❗ 設定の読み込みに失敗しました")
@@ -1445,11 +1557,20 @@ class CompleteGUI:
         
         # 従業員設定
         st.header("👥 従業員設定")
-        default_employees = ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "助勤"]
+        
+        # 保存された従業員設定を取得（セッション状態優先）
+        if 'last_employees' in st.session_state and st.session_state.last_employees:
+            saved_employees = st.session_state.last_employees
+        else:
+            saved_employees = self.config_manager.get_employees()
+            # セッション状態に保存
+            st.session_state.last_employees = saved_employees
+        
         employees_text = st.text_area(
             "従業員名（1行に1名）", 
-            value="\n".join(default_employees),
-            height=150
+            value="\n".join(saved_employees),
+            height=150,
+            help="変更後は下の保存ボタンを押してください"
         )
         new_employees = [emp.strip() for emp in employees_text.split('\n') if emp.strip()]
         
@@ -1467,16 +1588,51 @@ class CompleteGUI:
             estimated_duties = (len(new_employees) - 5) // 3  # バッファ5名除いて3名体制
             st.info(f"💡 推定対応可能勤務数: 約{estimated_duties}勤務（3名体制想定）")
         
-        # 従業員リストが変更されたかチェック
-        if 'last_employees' not in st.session_state:
-            st.session_state.last_employees = new_employees
-        elif st.session_state.last_employees != new_employees:
-            # 従業員リストが変更された場合、関連セッション状態をクリア
-            st.session_state.calendar_data = {}
-            st.session_state.last_employees = new_employees
-            st.success("✅ 従業員設定が更新されました。関連データをリセットしました。")
+        # 従業員保存機能
+        col1, col2, col3 = st.columns([1, 1, 2])
         
-        self.employees = new_employees
+        with col1:
+            if st.button("💾 従業員設定を保存", type="primary"):
+                if len(new_employees) >= 2:
+                    # Config Managerに保存
+                    self.config_manager.update_employees(new_employees)
+                    
+                    # セッション状態を強制更新
+                    st.session_state.last_employees = new_employees.copy()
+                    st.session_state.calendar_data = {}
+                    
+                    # 設定ファイルに保存
+                    filename = self.config_manager.save_config("従業員設定_自動保存")
+                    if filename:
+                        st.success(f"✅ 従業員設定を保存しました ({filename})")
+                        st.success(f"👥 従業員数: {len(new_employees)}名")
+                    else:
+                        st.success("✅ 従業員設定を一時保存しました")
+                    
+                    # 保存後は saved_employees を更新
+                    saved_employees = new_employees.copy()
+                    st.rerun()
+                else:
+                    st.error("❌ 従業員は最低2名必要です")
+        
+        with col2:
+            if st.button("🔄 元に戻す"):
+                default_employees = self.config_manager.default_config["employees"].copy()
+                self.config_manager.current_config["employees"] = default_employees
+                st.session_state.last_employees = default_employees
+                st.success("✅ デフォルト従業員設定に戻しました")
+                st.rerun()
+        
+        # 従業員リストが変更されたかチェック（表示用）
+        if 'last_employees' not in st.session_state:
+            st.session_state.last_employees = saved_employees
+        
+        # 現在の従業員を設定（保存されたものを使用）
+        self.employees = saved_employees
+        
+        # 変更がある場合の警告表示
+        if new_employees != saved_employees:
+            st.warning("⚠️ 従業員設定に変更があります。保存ボタンを押して保存してください。")
         
         # 前月末勤務設定
         st.header("🔄 前月末勤務情報")

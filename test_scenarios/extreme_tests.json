@@ -1,0 +1,77 @@
+{
+  "impossible_case": {
+    "name": "ほぼ不可能ケース",
+    "description": "解けない可能性のある極限テスト",
+    "employees": ["田中", "佐藤", "鈴木"],
+    "holidays": {
+      "田中": [1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 20, 21, 22, 23, 24],
+      "佐藤": [3, 4, 5, 6, 7, 12, 13, 14, 15, 16, 22, 23, 24, 25, 26],
+      "鈴木": [1, 5, 6, 7, 8, 9, 14, 15, 16, 17, 18, 24, 25, 26, 27, 28]
+    },
+    "prev_month_duties": [
+      {"employee": "田中", "date": -1, "duty": "勤務"},
+      {"employee": "佐藤", "date": -1, "duty": "勤務"},
+      {"employee": "鈴木", "date": -1, "duty": "勤務"}
+    ],
+    "special_constraints": ["no_work_after_nitetu"],
+    "expected_difficulty": "impossible"
+  },
+  "emergency_situation": {
+    "name": "緊急事態想定",
+    "description": "突発的な大量休暇申請",
+    "employees": ["田中", "佐藤", "鈴木", "高橋"],
+    "holidays": {
+      "田中": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      "佐藤": [11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+      "鈴木": [21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
+      "高橋": [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28]
+    },
+    "prev_month_duties": [],
+    "special_constraints": [],
+    "expected_difficulty": "impossible"
+  },
+  "new_employee_flood": {
+    "name": "新人大量参加",
+    "description": "新人多数での運用テスト",
+    "employees": ["田中", "佐藤", "鈴木", "新人A", "新人B", "新人C", "新人D", "新人E"],
+    "holidays": {
+      "田中": [1, 15],
+      "佐藤": [8, 22],
+      "新人A": [2, 3, 4],
+      "新人B": [5, 6, 7],
+      "新人C": [9, 10, 11],
+      "新人D": [12, 13, 14],
+      "新人E": [16, 17, 18]
+    },
+    "prev_month_duties": [],
+    "special_constraints": ["new_employee_priority"],
+    "expected_difficulty": "hard"
+  },
+  "manager_absence": {
+    "name": "管理職不在",
+    "description": "管理職が不在での運用",
+    "employees": ["新人A", "新人B", "新人C", "新人D"],
+    "holidays": {
+      "新人A": [1, 2, 15, 16],
+      "新人B": [8, 9, 22, 23],
+      "新人C": [5, 6, 25, 26],
+      "新人D": [12, 13, 28, 29]
+    },
+    "prev_month_duties": [],
+    "special_constraints": ["no_senior_staff"],
+    "expected_difficulty": "extreme"
+  },
+  "location_variety": {
+    "name": "勤務場所多様化",
+    "description": "多数の勤務場所での運用",
+    "employees": ["田中", "佐藤", "鈴木", "高橋", "伊藤"],
+    "holidays": {
+      "田中": [5, 6, 20, 21],
+      "佐藤": [10, 11, 25, 26],
+      "鈴木": [1, 2, 15, 16]
+    },
+    "prev_month_duties": [],
+    "special_constraints": ["multiple_locations"],
+    "expected_difficulty": "medium"
+  }
+}

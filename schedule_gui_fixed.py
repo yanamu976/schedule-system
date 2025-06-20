@@ -762,6 +762,9 @@ class CompleteScheduleEngine:
         n_days = calendar.monthrange(year, month)[1]
         self.setup_system(employee_names)
         
+        # 分析機能のためにカレンダーデータを保存
+        self._last_calendar_data = calendar_data
+        
         # Phase 1: 従業員優先度取得
         employee_priorities = None
         if self.config_manager:
@@ -796,11 +799,45 @@ class CompleteScheduleEngine:
         relax_level_used, status, solver, w, nitetu_counts, relax_notes, cross_constraints = result
         
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            return {
-                'success': False,
-                'error': '解を見つけられませんでした',
-                'debug_info': debug_info + prev_debug
-            }
+            # 原因分析機能（後付け分析方式）
+            try:
+                from failure_analyzer import FailureAnalyzer
+                analyzer = FailureAnalyzer()
+                
+                # 分析に必要なデータを収集
+                # 実際の勤務場所数を取得（全勤務場所）
+                work_locations = self.location_manager.get_duty_locations()
+                work_locations_count = len(work_locations)
+                
+                constraints_data = {'work_locations_count': work_locations_count}
+                
+                analysis_reason, analysis_detail, analysis_solutions = analyzer.analyze_failure_reason(
+                    debug_info=debug_info + prev_debug,
+                    constraints_data=constraints_data,
+                    year=year,
+                    month=month,
+                    employee_names=employee_names,
+                    calendar_data=calendar_data,
+                    prev_schedule_data=prev_schedule_data
+                )
+                
+                return {
+                    'success': False,
+                    'error': '解を見つけられませんでした',
+                    'debug_info': debug_info + prev_debug,
+                    'failure_analysis': {
+                        'reason': analysis_reason,
+                        'detail': analysis_detail,
+                        'solutions': analysis_solutions
+                    }
+                }
+            except Exception as analyzer_error:
+                # 分析機能でエラーが発生しても既存の動作を保持
+                return {
+                    'success': False,
+                    'error': '解を見つけられませんでした',
+                    'debug_info': debug_info + prev_debug
+                }
         
         # 月またぎ制約分析
         cross_analysis = []
@@ -1873,8 +1910,32 @@ class CompleteGUI:
                     st.success("✅ 勤務表が生成されました！")
                     self._show_results(result)
                 else:
-                    st.error(f"❌ {result['error']}")
-                    self._show_debug_info(result.get('debug_info', []))
+                    # 改善されたエラー表示（原因分析機能付き）
+                    failure_analysis = result.get('failure_analysis')
+                    
+                    if failure_analysis:
+                        # 原因分析結果を表示
+                        st.error(f"❌ 勤務表作成失敗：{failure_analysis['reason']}")
+                        
+                        # 詳細説明
+                        st.markdown("### 📅 **問題**")
+                        detail_lines = failure_analysis['detail'].split('\\n')
+                        for line in detail_lines:
+                            if line.strip():
+                                st.write(f"   {line}")
+                        
+                        # 対処法
+                        st.markdown("### 💡 **対処法**")
+                        for solution in failure_analysis['solutions']:
+                            st.write(f"   • {solution}")
+                            
+                        # デバッグ情報は展開可能に
+                        with st.expander("🔍 デバッグ情報"):
+                            self._show_debug_info(result.get('debug_info', []))
+                    else:
+                        # 従来のエラー表示（分析機能が利用できない場合）
+                        st.error(f"❌ {result['error']}")
+                        self._show_debug_info(result.get('debug_info', []))
                     
             except Exception as e:
                 st.error(f"❌ エラー: {str(e)}")

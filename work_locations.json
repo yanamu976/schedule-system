@@ -41,6 +41,24 @@
       "type": "一徹勤務",
       "duration": 16,
       "color": "#45B7D1"
+    },
+    {
+      "name": "防災A",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#45B7D1"
+    },
+    {
+      "name": "防災A",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#45B7D1"
+    },
+    {
+      "name": "王様",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#45B7D1"
     }
   ],
   "holiday_type": {

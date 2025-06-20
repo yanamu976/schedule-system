@@ -300,6 +300,78 @@ class CompleteScheduleEngine:
         """重みパラメータを更新"""
         self.weights.update(new_weights)
     
+    def _get_keijo_shift_id(self):
+        """警乗のシフトIDを取得"""
+        duty_names = self.location_manager.get_duty_names()
+        for i, name in enumerate(duty_names):
+            if "警乗" in name:
+                return i
+        return None  # 警乗勤務場所が見つからない場合
+    
+    def _add_keijo_alternating_constraints(self, model, w, year, month, n_days, keijo_base_date=None):
+        """警乗隔日制約をソフト制約（ペナルティ方式）として追加"""
+        keijo_shift_id = self._get_keijo_shift_id()
+        if keijo_shift_id is None:
+            return [], []  # 警乗勤務場所がない場合はスキップ
+        
+        # デフォルト基準日（2025年6月1日）
+        if keijo_base_date is None:
+            return [f"🚁 警乗隔日制約: 基準日未設定のためスキップ"], []
+        
+        # 基準日からの日数計算
+        current_month_start = datetime(year, month, 1)
+        days_offset = (current_month_start - keijo_base_date).days
+        
+        constraint_info = []
+        keijo_work_days = []
+        keijo_rest_days = []
+        penalty_vars = []
+        
+        # 制約緩和レベルに応じたペナルティ重み（大幅強化）
+        relax_level = getattr(self, '_current_relax_level', 0)
+        if relax_level == 0:
+            penalty_weight = 10000  # 超高ペナルティ（ほぼハード制約）
+        elif relax_level == 1:
+            penalty_weight = 5000   # 高ペナルティ
+        elif relax_level == 2:
+            penalty_weight = 1000   # 中程度のペナルティ
+        else:
+            penalty_weight = 100    # 低ペナルティ
+        
+        for d in range(n_days):
+            total_days = days_offset + d
+            
+            if total_days % 2 == 0:
+                # 偶数日：警乗勤務日（1人配置が理想）
+                keijo_work_days.append(d + 1)
+                
+                # ペナルティ変数：配置人数が1人でない場合のペナルティ
+                penalty_var = model.NewIntVar(0, self.n_employees, f"keijo_penalty_work_{d}")
+                keijo_count = sum(w[e, d, keijo_shift_id] for e in range(self.n_employees))
+                
+                # |keijo_count - 1| のペナルティを計算
+                model.AddAbsEquality(penalty_var, keijo_count - 1)
+                penalty_vars.append((penalty_var, penalty_weight))
+                
+            else:
+                # 奇数日：警乗休止日（0人配置が理想）
+                keijo_rest_days.append(d + 1)
+                
+                # ペナルティ変数：配置人数が0人でない場合のペナルティ
+                penalty_var = model.NewIntVar(0, self.n_employees, f"keijo_penalty_rest_{d}")
+                keijo_count = sum(w[e, d, keijo_shift_id] for e in range(self.n_employees))
+                
+                # keijo_count のペナルティ（0人以外の場合）
+                model.Add(penalty_var == keijo_count)
+                penalty_vars.append((penalty_var, penalty_weight))
+        
+        constraint_info.append(f"🚁 警乗隔日ソフト制約適用: 基準日{keijo_base_date.strftime('%Y-%m-%d')}")
+        constraint_info.append(f"  ペナルティ重み: {penalty_weight} (制約緩和レベル{relax_level})")
+        constraint_info.append(f"  警乗勤務日: {keijo_work_days[:5]}{'...' if len(keijo_work_days) > 5 else ''}")
+        constraint_info.append(f"  警乗休止日: {keijo_rest_days[:5]}{'...' if len(keijo_rest_days) > 5 else ''}")
+        
+        return constraint_info, penalty_vars
+    
     def setup_system(self, employee_names):
         """システム設定"""
         self.employees = employee_names
@@ -460,7 +532,7 @@ class CompleteScheduleEngine:
         return prev_duties, debug_info
     
     def build_optimization_model(self, n_days, ng_constraints, preferences, holidays, 
-                                relax_level=0, prev_duties=None):
+                                relax_level=0, prev_duties=None, keijo_base_date=None):
         """最適化モデル構築（月またぎ制約修正版）"""
         model = cp_model.CpModel()
         
@@ -476,10 +548,25 @@ class CompleteScheduleEngine:
             for d in range(n_days):
                 model.AddExactlyOne(w[e, d, s] for s in range(self.n_shifts))
         
-        # 基本制約2: 各勤務場所は1日1人
+        # 基本制約2: 各勤務場所は1日1人（警乗隔日制約を考慮）
+        keijo_shift_id = self._get_keijo_shift_id()
         for d in range(n_days):
             for s in range(self.n_duties):
-                model.Add(sum(w[e, d, s] for e in range(self.n_employees)) == 1)
+                if s == keijo_shift_id and keijo_base_date is not None:
+                    # 警乗の場合は隔日制約により0人または1人
+                    current_month_start = datetime(self.year, self.month, 1)
+                    days_offset = (current_month_start - keijo_base_date).days
+                    total_days = days_offset + d
+                    
+                    if total_days % 2 == 0:
+                        # 偶数日：警乗勤務日（必ず1人）
+                        model.Add(sum(w[e, d, s] for e in range(self.n_employees)) == 1)
+                    else:
+                        # 奇数日：警乗休止日（必ず0人）
+                        model.Add(sum(w[e, d, s] for e in range(self.n_employees)) == 0)
+                else:
+                    # 警乗以外または警乗隔日制約なしの場合は通常通り1人
+                    model.Add(sum(w[e, d, s] for e in range(self.n_employees)) == 1)
         
         # 基本制約3: 勤務後は翌日非番
         for e in range(self.n_employees):
@@ -497,6 +584,23 @@ class CompleteScheduleEngine:
         for e in range(self.n_employees):
             for d in range(n_days - 1):
                 model.Add(w[e, d, self.OFF_SHIFT_ID] + w[e, d + 1, self.OFF_SHIFT_ID] <= 1)
+        
+        # 🆕 警乗隔日制約情報の取得（基本制約2で実装済み）
+        if keijo_base_date is not None:
+            current_month_start = datetime(self.year, self.month, 1)
+            days_offset = (current_month_start - keijo_base_date).days
+            keijo_work_days = [d+1 for d in range(n_days) if (days_offset + d) % 2 == 0]
+            keijo_rest_days = [d+1 for d in range(n_days) if (days_offset + d) % 2 == 1]
+            
+            keijo_constraint_info = [
+                f"🚁 警乗隔日制約適用: 基準日{keijo_base_date.strftime('%Y-%m-%d')}",
+                f"  警乗勤務日: {keijo_work_days[:5]}{'...' if len(keijo_work_days) > 5 else ''}",
+                f"  警乗休止日: {keijo_rest_days[:5]}{'...' if len(keijo_rest_days) > 5 else ''}"
+            ]
+            keijo_penalty_vars = []  # ハード制約なのでペナルティなし
+        else:
+            keijo_constraint_info = ["🚁 警乗隔日制約: 基準日未設定のためスキップ"]
+            keijo_penalty_vars = []
         
         # 🔥 月またぎ制約（完全修正版）
         cross_month_constraints = []
@@ -609,6 +713,11 @@ class CompleteScheduleEngine:
                 if 0 <= day < n_days and 0 <= shift < self.n_shifts:
                     preference_terms.append(weight * w[emp_id, day, shift])
         
+        # 警乗隔日ペナルティ項
+        keijo_penalty_terms = []
+        for penalty_var, weight in keijo_penalty_vars:
+            keijo_penalty_terms.append(weight * penalty_var)
+        
         # 目的関数
         objective_terms = [
             relief_weight * sum(relief_work_vars),
@@ -620,12 +729,17 @@ class CompleteScheduleEngine:
         if nitetu_gap != 0:
             objective_terms.append(self.weights['N2_GAP'] * nitetu_gap)
         
+        # 警乗隔日ペナルティを追加
+        objective_terms.extend(keijo_penalty_terms)
         objective_terms.extend(preference_terms)
         model.Minimize(sum(objective_terms))
         
-        return model, w, nitetu_counts, cross_month_constraints
+        # 制約情報に警乗制約を追加
+        all_constraints = cross_month_constraints + keijo_constraint_info
+        
+        return model, w, nitetu_counts, all_constraints
     
-    def solve_with_relaxation(self, n_days, ng_constraints, preferences, holidays, prev_duties=None):
+    def solve_with_relaxation(self, n_days, ng_constraints, preferences, holidays, prev_duties=None, keijo_base_date=None):
         """段階的制約緩和による求解"""
         relax_notes = []
         cross_constraints = []
@@ -640,7 +754,7 @@ class CompleteScheduleEngine:
             
             # モデル構築
             model, w, nitetu_counts, cross_const = self.build_optimization_model(
-                n_days, ng_constraints, preferences, holidays_to_use, relax_level, prev_duties
+                n_days, ng_constraints, preferences, holidays_to_use, relax_level, prev_duties, keijo_base_date
             )
             cross_constraints = cross_const
             
@@ -757,9 +871,11 @@ class CompleteScheduleEngine:
         
         return results
     
-    def solve_schedule(self, year, month, employee_names, calendar_data, prev_schedule_data=None):
+    def solve_schedule(self, year, month, employee_names, calendar_data, prev_schedule_data=None, keijo_base_date=None):
         """スケジュール求解（Phase 1: 優先度対応版）"""
         n_days = calendar.monthrange(year, month)[1]
+        self.year = year
+        self.month = month
         self.setup_system(employee_names)
         
         # 分析機能のためにカレンダーデータを保存
@@ -795,7 +911,7 @@ class CompleteScheduleEngine:
             prev_duties, prev_debug = self.parse_previous_month_schedule(prev_schedule_data)
         
         # 最適化実行
-        result = self.solve_with_relaxation(n_days, ng_constraints, preferences, holidays, prev_duties)
+        result = self.solve_with_relaxation(n_days, ng_constraints, preferences, holidays, prev_duties, keijo_base_date)
         relax_level_used, status, solver, w, nitetu_counts, relax_notes, cross_constraints = result
         
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -1580,6 +1696,29 @@ class CompleteGUI:
         for name in duty_names:
             st.write(f"• {name}")
         
+        # 🆕 警乗設定セクション
+        st.markdown("---")
+        st.header("🚁 警乗設定")
+        
+        # 警乗起点日設定
+        self.keijo_base_date = st.date_input(
+            "警乗隔日の起点日",
+            value=date(2025, 6, 1),
+            help="この日から偶数日に警乗が入ります"
+        )
+        
+        # パターン表示
+        if self.keijo_base_date and "警乗" in duty_names:
+            pattern_days = self._calculate_keijo_pattern(self.year, self.month)
+            st.info(f"📅 警乗勤務日: {pattern_days['work_days']}")
+            st.info(f"📅 警乗休止日: {pattern_days['rest_days']}")
+            
+            # 警告表示
+            if pattern_days['total_work_days'] == 0:
+                st.warning("⚠️ この月は警乗勤務日がありません")
+        elif "警乗" not in duty_names:
+            st.warning("⚠️ 「警乗」勤務場所が設定されていません")
+        
         # Phase 1: 優先度設定ボタン
         if st.button("🎯 優先度設定", use_container_width=True):
             st.session_state.show_priority_settings = True
@@ -1716,6 +1855,34 @@ class CompleteGUI:
                 prev_schedule[emp] = emp_schedule
         
         return prev_schedule
+    
+    def _calculate_keijo_pattern(self, year, month):
+        """警乗勤務日パターンを計算"""
+        base_date = self.keijo_base_date
+        month_start = date(year, month, 1)
+        days_offset = (month_start - base_date).days
+        
+        keijo_work_days = []
+        keijo_rest_days = []
+        n_days = calendar.monthrange(year, month)[1]
+        
+        for d in range(n_days):
+            day_num = d + 1
+            if (days_offset + d) % 2 == 0:
+                keijo_work_days.append(day_num)
+            else:
+                keijo_rest_days.append(day_num)
+        
+        # 表示用フォーマット
+        work_str = f"{', '.join(map(str, keijo_work_days[:5]))}{'...' if len(keijo_work_days) > 5 else ''}"
+        rest_str = f"{', '.join(map(str, keijo_rest_days[:5]))}{'...' if len(keijo_rest_days) > 5 else ''}"
+        
+        return {
+            'work_days': work_str,
+            'rest_days': rest_str,
+            'total_work_days': len(keijo_work_days),
+            'total_rest_days': len(keijo_rest_days)
+        }
     
     def _create_calendar_input(self):
         """カレンダー入力（完全修正版）"""
@@ -1903,7 +2070,8 @@ class CompleteGUI:
                     month=self.month,
                     employee_names=self.employees,
                     calendar_data=st.session_state.calendar_data,
-                    prev_schedule_data=self.prev_schedule_data
+                    prev_schedule_data=self.prev_schedule_data,
+                    keijo_base_date=datetime.combine(self.keijo_base_date, datetime.min.time()) if hasattr(self, 'keijo_base_date') else None
                 )
                 
                 if result['success']:

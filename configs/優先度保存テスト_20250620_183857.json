@@ -1,6 +1,12 @@
 {
-  "config_name": "デフォルト設定",
-  "created_date": "2025-06-22",
+  "config_name": "優先度保存テスト",
+  "created_date": "2025-06-20",
+  "last_modified": "2025-06-20T18:38:57.452504",
+  "employees": [
+    "テスト従業員A",
+    "テスト従業員B",
+    "テスト従業員C"
+  ],
   "work_locations": [
     {
       "name": "駅A",
@@ -21,20 +27,6 @@
       "color": "#FFB6B6"
     }
   ],
-  "holiday_type": {
-    "name": "休暇",
-    "color": "#FFEAA7"
-  },
-  "employees": [
-    "Aさん",
-    "Bさん",
-    "Cさん",
-    "Dさん",
-    "Eさん",
-    "Fさん",
-    "Gさん",
-    "助勤"
-  ],
   "employee_priorities": {
     "Aさん": {
       "駅A": 3,
@@ -52,11 +44,24 @@
       "警乗": 3
     }
   },
-  "priority_weights": {
-    "0": 1000,
-    "1": 10,
-    "2": 5,
-    "3": 0
+  "keijo_settings": {
+    "base_date": "2025-06-01",
+    "enabled": true
   },
-  "keijo_base_date": "2025-06-01"
+  "current_calendar_data": {},
+  "annual_leave_remaining": {
+    "テスト従業員A": 20,
+    "テスト従業員B": 20,
+    "テスト従業員C": 20
+  },
+  "system_settings": {
+    "target_year": 2025,
+    "target_month": 6,
+    "priority_weights": {
+      "0": 1000,
+      "1": 10,
+      "2": 5,
+      "3": 0
+    }
+  }
 }

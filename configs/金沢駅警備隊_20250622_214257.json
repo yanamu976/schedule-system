@@ -1,0 +1,115 @@
+{
+  "config_name": "金沢駅警備隊",
+  "created_date": "2025-06-22",
+  "last_modified": "2025-06-22T21:42:57.619270",
+  "employees": [
+    "Aさん",
+    "Bさん",
+    "Cさん",
+    "f",
+    "g",
+    "h",
+    "j",
+    "k",
+    "助勤"
+  ],
+  "work_locations": [
+    {
+      "name": "駅A",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FF6B6B"
+    },
+    {
+      "name": "指令",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FF8E8E"
+    },
+    {
+      "name": "警乗",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FFB6B6"
+    }
+  ],
+  "employee_priorities": {
+    "Aさん": {
+      "駅A": 3,
+      "指令": 2,
+      "警乗": 0
+    },
+    "Bさん": {
+      "駅A": 3,
+      "指令": 3,
+      "警乗": 3
+    },
+    "Cさん": {
+      "駅A": 0,
+      "指令": 0,
+      "警乗": 3
+    }
+  },
+  "keijo_settings": {
+    "base_date": "2025-06-01",
+    "enabled": true
+  },
+  "current_calendar_data": {
+    "Aさん": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "Cさん": {
+      "holidays": [
+        "2025-06-01",
+        "2025-06-11"
+      ],
+      "duty_preferences": {}
+    },
+    "Bさん": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "f": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "g": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "h": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "j": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "k": {
+      "holidays": [],
+      "duty_preferences": {}
+    }
+  },
+  "annual_leave_remaining": {
+    "Aさん": 20,
+    "Bさん": 20,
+    "Cさん": 20,
+    "f": 20,
+    "g": 20,
+    "h": 20,
+    "j": 20,
+    "k": 20,
+    "助勤": 20
+  },
+  "system_settings": {
+    "target_year": 2025,
+    "target_month": 6,
+    "priority_weights": {
+      "0": 1000,
+      "1": 10,
+      "2": 5,
+      "3": 0
+    }
+  }
+}

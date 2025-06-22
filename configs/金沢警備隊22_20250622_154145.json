@@ -1,0 +1,110 @@
+{
+  "config_name": "金沢警備隊22",
+  "created_date": "2025-06-22",
+  "last_modified": "2025-06-22T15:42:25.464826",
+  "employees": [
+    "中谷",
+    "宮崎",
+    "木村",
+    "田中",
+    "谷村",
+    "新蔵",
+    "川口",
+    "杉本"
+  ],
+  "work_locations": [
+    {
+      "name": "駅A",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FF6B6B"
+    },
+    {
+      "name": "指令",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FF8E8E"
+    },
+    {
+      "name": "警乗",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FFB6B6"
+    }
+  ],
+  "employee_priorities": {
+    "Aさん": {
+      "駅A": 3,
+      "指令": 2,
+      "警乗": 0
+    },
+    "Bさん": {
+      "駅A": 3,
+      "指令": 3,
+      "警乗": 3
+    },
+    "Cさん": {
+      "駅A": 0,
+      "指令": 0,
+      "警乗": 3
+    }
+  },
+  "keijo_settings": {
+    "base_date": "2025-06-01",
+    "enabled": true
+  },
+  "current_calendar_data": {
+    "中谷": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "宮崎": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "木村": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "田中": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "谷村": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "新蔵": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "川口": {
+      "holidays": [],
+      "duty_preferences": {}
+    },
+    "杉本": {
+      "holidays": [],
+      "duty_preferences": {}
+    }
+  },
+  "annual_leave_remaining": {
+    "中谷": 20,
+    "宮崎": 20,
+    "木村": 20,
+    "田中": 20,
+    "谷村": 20,
+    "新蔵": 20,
+    "川口": 20,
+    "杉本": 20
+  },
+  "system_settings": {
+    "target_year": 2025,
+    "target_month": 6,
+    "priority_weights": {
+      "0": 1000,
+      "1": 10,
+      "2": 5,
+      "3": 0
+    }
+  }
+}

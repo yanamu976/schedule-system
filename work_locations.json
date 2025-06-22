@@ -17,48 +17,6 @@
       "type": "一徹勤務",
       "duration": 16,
       "color": "#ffd1b6"
-    },
-    {
-      "name": "防B",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#96CEB4"
-    },
-    {
-      "name": "防災A",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#FFEAA7"
-    },
-    {
-      "name": "百A",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#45B7D1"
-    },
-    {
-      "name": "百B",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#45B7D1"
-    },
-    {
-      "name": "防災A",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#45B7D1"
-    },
-    {
-      "name": "防災A",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#45B7D1"
-    },
-    {
-      "name": "王様",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#45B7D1"
     }
   ],
   "holiday_type": {

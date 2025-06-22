@@ -133,6 +133,274 @@ class ConfigurationManager:
         self.current_config["employees"] = employees
 
 
+# =================== 統一設定管理システム ===================
+
+class UnifiedConfigurationManager:
+    """
+    すべての設定を単一のJSONファイルで管理する統一クラス
+    既存のConfigurationManagerとWorkLocationManagerの機能を統合
+    """
+    
+    def __init__(self):
+        self.config_file = "configs/unified_settings.json"
+        self.backup_dir = "configs/backups"
+        self._ensure_directories()
+        self.config = self._load_or_create_default()
+        
+    def _ensure_directories(self):
+        """必要なディレクトリを作成"""
+        os.makedirs("configs", exist_ok=True)
+        os.makedirs(self.backup_dir, exist_ok=True)
+    
+    def _load_or_create_default(self):
+        """設定を読み込む、なければデフォルトを作成"""
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"設定読み込みエラー: {e}")
+                # バックアップから復元を試みる
+                return self._restore_from_backup() or self._get_default_config()
+        else:
+            default = self._get_default_config()
+            self.save_config(default)
+            return default
+    
+    def _get_default_config(self):
+        """デフォルト設定（既存のデフォルト値を完全に維持）"""
+        return {
+            "version": "2.0",
+            "config_name": "統合設定",
+            "created_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            
+            # 勤務場所設定
+            "work_locations": [
+                {"name": "駅A", "type": "一徹勤務", "duration": 16, "color": "#FF6B6B"},
+                {"name": "指令", "type": "一徹勤務", "duration": 16, "color": "#FF8E8E"},
+                {"name": "警乗", "type": "一徹勤務", "duration": 16, "color": "#FFB6B6"}
+            ],
+            "holiday_type": {"name": "休暇", "color": "#FFEAA7"},
+            
+            # 従業員設定
+            "employees": ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "助勤"],
+            
+            # 優先度設定
+            "employee_priorities": {
+                "Aさん": {"駅A": 3, "指令": 2, "警乗": 0},
+                "Bさん": {"駅A": 3, "指令": 3, "警乗": 3},
+                "Cさん": {"駅A": 0, "指令": 0, "警乗": 3}
+            },
+            "priority_weights": {"0": 1000, "1": 10, "2": 5, "3": 0},
+            
+            # 警乗設定
+            "keijo_base_date": "2025-06-01",
+            
+            # 制約重み設定（エンジンで使用）
+            "constraint_weights": {
+                'RELIEF': 10, 'HOLIDAY': 50, 'NITETU': 15,
+                'N2_GAP': 30, 'PREF': 5, 'CROSS_MONTH': 20, 'PRIORITY': 25
+            }
+        }
+    
+    def save_config(self, config_data=None):
+        """設定を保存（自動バックアップ付き）"""
+        if config_data is None:
+            config_data = self.config
+        
+        # バックアップを作成
+        if os.path.exists(self.config_file):
+            backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            backup_path = os.path.join(self.backup_dir, backup_name)
+            try:
+                with open(self.config_file, 'r') as src:
+                    with open(backup_path, 'w') as dst:
+                        dst.write(src.read())
+            except:
+                pass
+        
+        # 更新日時を記録
+        config_data["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 保存実行
+        try:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, ensure_ascii=False, indent=2)
+            self.config = config_data
+            return True
+        except Exception as e:
+            print(f"保存エラー: {e}")
+            return False
+    
+    def save_as_profile(self, profile_name):
+        """名前を付けて保存"""
+        if not profile_name:
+            return False
+        
+        profiles_dir = "configs/profiles"
+        os.makedirs(profiles_dir, exist_ok=True)
+        
+        filename = f"{profile_name}_{datetime.now().strftime('%Y%m%d')}.json"
+        filepath = os.path.join(profiles_dir, filename)
+        
+        profile_data = self.config.copy()
+        profile_data["config_name"] = profile_name
+        profile_data["saved_as_profile"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(profile_data, f, ensure_ascii=False, indent=2)
+            return filename
+        except Exception as e:
+            print(f"プロファイル保存エラー: {e}")
+            return None
+    
+    def load_profile(self, profile_path):
+        """プロファイルを読み込む"""
+        try:
+            with open(profile_path, 'r', encoding='utf-8') as f:
+                self.config = json.load(f)
+                self.save_config()  # 現在の設定として保存
+                return True
+        except Exception as e:
+            print(f"プロファイル読み込みエラー: {e}")
+            return False
+    
+    def get_profile_list(self):
+        """利用可能なプロファイルのリスト"""
+        profiles_dir = "configs/profiles"
+        if not os.path.exists(profiles_dir):
+            return []
+        
+        profiles = []
+        for file in os.listdir(profiles_dir):
+            if file.endswith('.json'):
+                filepath = os.path.join(profiles_dir, file)
+                try:
+                    with open(filepath, 'r') as f:
+                        data = json.load(f)
+                        profiles.append({
+                            'filename': file,
+                            'filepath': filepath,
+                            'name': data.get('config_name', '名称未設定'),
+                            'date': data.get('saved_as_profile', '不明')
+                        })
+                except:
+                    pass
+        
+        return sorted(profiles, key=lambda x: x['date'], reverse=True)
+    
+    def _restore_from_backup(self):
+        """バックアップから復元"""
+        if not os.path.exists(self.backup_dir):
+            return None
+        
+        backups = [f for f in os.listdir(self.backup_dir) if f.startswith('backup_') and f.endswith('.json')]
+        if not backups:
+            return None
+        
+        # 最新のバックアップを使用
+        latest_backup = sorted(backups)[-1]
+        backup_path = os.path.join(self.backup_dir, latest_backup)
+        
+        try:
+            with open(backup_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return None
+    
+    # 既存コードとの互換性のためのアクセサメソッド
+    def get_work_locations(self):
+        return self.config.get("work_locations", [])
+    
+    def get_duty_names(self):
+        return [loc["name"] for loc in self.get_work_locations()]
+    
+    def get_employees(self):
+        return self.config.get("employees", [])
+    
+    def get_employee_priorities(self):
+        return self.config.get("employee_priorities", {})
+    
+    def get_priority_weights(self):
+        weights = self.config.get("priority_weights", {"0": 1000, "1": 10, "2": 5, "3": 0})
+        return {int(k): v for k, v in weights.items()}
+    
+    def get_holiday_type(self):
+        return self.config.get("holiday_type", {"name": "休暇", "color": "#FFEAA7"})
+    
+    def get_keijo_base_date(self):
+        date_str = self.config.get("keijo_base_date", "2025-06-01")
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d").date()
+        except:
+            return date(2025, 6, 1)
+    
+    def get_config_name(self):
+        return self.config.get("config_name", "名称未設定")
+    
+    # データ更新メソッド
+    def update_employees(self, employees):
+        """従業員リストを更新"""
+        self.config["employees"] = employees
+        # 優先度設定の整合性を保つ
+        self._sync_employee_priorities()
+        return self.save_config()
+    
+    def update_work_locations(self, locations):
+        """勤務場所を更新"""
+        self.config["work_locations"] = locations
+        # 優先度設定の整合性を保つ
+        self._sync_location_priorities()
+        return self.save_config()
+    
+    def update_priorities(self, priorities):
+        """優先度設定を更新"""
+        self.config["employee_priorities"] = priorities
+        return self.save_config()
+    
+    def _sync_employee_priorities(self):
+        """従業員変更時の優先度設定の整合性を保つ"""
+        current_employees = set(self.config.get("employees", []))
+        current_priorities = self.config.get("employee_priorities", {})
+        
+        # 助勤は除外
+        target_employees = {emp for emp in current_employees if emp != "助勤"}
+        
+        # 新しい従業員にデフォルト優先度を設定
+        for emp in target_employees:
+            if emp not in current_priorities:
+                current_priorities[emp] = {}
+                for loc in self.get_work_locations():
+                    current_priorities[emp][loc["name"]] = 2  # デフォルトは普通
+        
+        # 削除された従業員の優先度を削除
+        for emp in list(current_priorities.keys()):
+            if emp not in target_employees:
+                del current_priorities[emp]
+        
+        self.config["employee_priorities"] = current_priorities
+    
+    def _sync_location_priorities(self):
+        """勤務場所変更時の優先度設定の整合性を保つ"""
+        current_locations = self.get_duty_names()
+        current_priorities = self.config.get("employee_priorities", {})
+        
+        for emp_name, emp_priorities in current_priorities.items():
+            # 新しい勤務場所にデフォルト優先度を設定
+            for loc_name in current_locations:
+                if loc_name not in emp_priorities:
+                    emp_priorities[loc_name] = 2
+            
+            # 削除された勤務場所の優先度を削除
+            for loc_name in list(emp_priorities.keys()):
+                if loc_name not in current_locations:
+                    del emp_priorities[loc_name]
+        
+        self.config["employee_priorities"] = current_priorities
+
+
 class WorkLocationManager:
     """勤務場所管理クラス（既存互換性維持）"""
     
@@ -473,17 +741,10 @@ class CompleteScheduleEngine:
                                      if loc['name'] == duty_name][0]
                             penalty = priority_weights.get(priority, 0)
                             
-                            # 優先度に基づいたペナルティ設定（修正版）
+                            # 優先度に基づいたペナルティ設定
                             for day in range(n_days):
-                                # 全ての優先度レベルを適用（0=高ペナルティ、3=低ペナルティ/報酬）
-                                if priority == 0:  # 不可 - 高ペナルティ
+                                if penalty > 0:  # ペナルティありの場合
                                     preferences[(emp_id, day, duty_id)] = penalty
-                                elif priority == 1:  # 可能 - 中ペナルティ
-                                    preferences[(emp_id, day, duty_id)] = penalty
-                                elif priority == 2:  # 普通 - 低ペナルティ
-                                    preferences[(emp_id, day, duty_id)] = penalty
-                                elif priority == 3:  # 最優先 - 報酬（負のペナルティ）
-                                    preferences[(emp_id, day, duty_id)] = -50  # 優先勤務場所への報酬
                                     
                             debug_info.append(f"✅ {emp_name}:{duty_name}優先度{priority}(ペナルティ{penalty})適用")
         
@@ -1304,30 +1565,23 @@ class CompleteGUI:
     """完全版GUI（Phase 1: 設定管理対応）"""
     
     def __init__(self):
-        # Phase 1: 設定管理系初期化
+        # 統一設定管理を使用
+        self.unified_config = UnifiedConfigurationManager()
+        
+        # 既存のWorkLocationManagerは互換性のために残すが、統一設定を参照
+        self.location_manager = WorkLocationManager()
+        self.location_manager.duty_locations = self.unified_config.get_work_locations()
+        self.location_manager.holiday_type = self.unified_config.get_holiday_type()
+        
+        # 既存のConfigurationManagerも互換性のために残すが、統一設定を参照
         self.config_manager = ConfigurationManager()
-        self.location_manager = WorkLocationManager(self.config_manager)
+        self.config_manager.current_config = self.unified_config.config
         
-        # 🆕 統合設定管理システム初期化
-        try:
-            from unified_config_manager import UnifiedConfigManager
-            self.unified_config = UnifiedConfigManager()
-        except ImportError as e:
-            st.error(f"統合設定管理システムの読み込みエラー: {e}")
-            self.unified_config = None
-        
+        # エンジンとエクスポーターは変更なし
         self.engine = CompleteScheduleEngine(self.location_manager, self.config_manager)
         self.excel_exporter = ExcelExporter(self.engine)
         
-        # 🔧 基本属性の初期化（セッション状態優先）
-        self.year = st.session_state.get('year', 2025) if 'year' in st.session_state else 2025
-        self.month = st.session_state.get('month', 6) if 'month' in st.session_state else 6
-        self.n_days = calendar.monthrange(self.year, self.month)[1]
-        
-        # 🔧 初期化時に既存の統合設定があれば読み込み
-        self._initialize_from_existing_config()
-        
-        # セッション状態初期化
+        # セッション状態の初期化（既存のまま）
         if 'calendar_data' not in st.session_state:
             st.session_state.calendar_data = {}
         if 'show_config' not in st.session_state:
@@ -1337,53 +1591,18 @@ class CompleteGUI:
         if 'show_priority_settings' not in st.session_state:
             st.session_state.show_priority_settings = False
         if 'last_employees' not in st.session_state:
-            st.session_state.last_employees = self.config_manager.get_employees()
-        
-        # 🆕 統合設定管理のための追加セッション状態
-        if 'keijo_base_date' not in st.session_state:
-            st.session_state.keijo_base_date = date(2025, 6, 1)
-        if 'year' not in st.session_state:
-            st.session_state.year = 2025
-        if 'month' not in st.session_state:
-            st.session_state.month = 6
-        # 🆕 現在アクティブな統合設定ファイルの追跡
-        if 'current_unified_config' not in st.session_state:
-            st.session_state.current_unified_config = None
-        if 'unified_config_auto_save' not in st.session_state:
-            st.session_state.unified_config_auto_save = True
-        # 🆕 設定ファイル選択画面表示フラグ
-        if 'show_config_selector' not in st.session_state:
-            st.session_state.show_config_selector = False
-        
-        # デフォルト設定読み込み
-        config_files = self.config_manager.get_config_files()
-        if 'default.json' in config_files:
-            self.config_manager.load_config('default.json')
-        else:
-            # デフォルト設定ファイルがない場合は作成
-            default_filename = self.config_manager.save_config("デフォルト設定")
-            if default_filename:
-                print(f"✅ デフォルト設定ファイルを作成しました: {default_filename}")
-        
-        # 既存互換性維持
-        self.location_manager.load_config()
-        
-        # 設定の初期読み込み後に重複除去と保存
-        if len(self.location_manager.duty_locations) != len(set(loc["name"] for loc in self.location_manager.duty_locations)):
-            # 重複が検出された場合、クリーンアップして保存
-            self.location_manager.duty_locations = self.location_manager._remove_duplicates(self.location_manager.duty_locations)
-            self.location_manager.save_config()
-            print("✅ 重複した勤務場所を削除してクリーンアップしました")
+            st.session_state.last_employees = self.unified_config.get_employees()
     
     def run(self):
-        """メイン実行（1ページ統合設計）"""
-        # 🔧 実行開始時に統合設定との同期を確認
-        self._ensure_config_sync()
-        
+        """メイン実行"""
         self._setup_page()
         
-        # 🆕 1ページ統合設計 - 全ての機能を縦に配置
-        self._unified_single_page()
+        if st.session_state.show_config:
+            self._configuration_page()
+        elif st.session_state.show_priority_settings:
+            self._priority_settings_page()
+        else:
+            self._main_page()
     
     def _setup_page(self):
         """ページ設定（Phase 1）"""
@@ -1406,766 +1625,12 @@ class CompleteGUI:
         
         st.markdown("---")
     
-    def _unified_single_page(self):
-        """🆕 1ページ統合設計のメイン画面"""
-        
-        # サイドバーナビゲーション（目次）
-        self._create_navigation_sidebar()
-        
-        # メイン統合設定セクション
-        st.container()
-        with st.container():
-            self._create_unified_config_section()
-        
-        # セクション1: 基本設定（最も使用頻度が高い）
-        st.container()
-        with st.container():
-            st.markdown('<div id="basic-settings"></div>', unsafe_allow_html=True)
-            st.header("📋 基本設定")
-            self._basic_settings_section()
-        
-        # セクション2: スケジュール生成（使用頻度高）
-        st.container()
-        with st.container():
-            st.markdown('<div id="schedule-generation"></div>', unsafe_allow_html=True)
-            st.header("🚀 スケジュール生成")
-            self._schedule_generation_section()
-        
-        # セクション3: 優先度設定（中程度の使用頻度）
-        st.container()
-        with st.container():
-            st.markdown('<div id="priority-settings"></div>', unsafe_allow_html=True)
-            st.header("🎯 従業員優先度設定")
-            self._inline_priority_settings_section()
-        
-        # セクション4: 詳細設定（使用頻度低 - 下部に配置）
-        st.container()
-        with st.container():
-            st.markdown('<div id="detail-settings"></div>', unsafe_allow_html=True)
-            st.header("⚙️ 詳細設定")
-            self._inline_configuration_section()
-        
-        # 設定ファイル選択画面（必要時のみ表示）
-        if st.session_state.get('show_config_selector', False):
-            self._show_config_selector()
-        
-        # フッター
-        self._create_footer()
-    
-    def _create_navigation_sidebar(self):
-        """ナビゲーション用サイドバー（目次）"""
-        with st.sidebar:
-            st.title("📑 ページ目次")
-            
-            # 🆕 統合設定がアクティブな場合の表示
-            if self._is_unified_config_active():
-                current_config_name = self._get_current_unified_config_name()
-                st.success(f"🔗 アクティブ: {current_config_name}")
-            
-            st.markdown("---")
-            
-            # ナビゲーションリンク（JavaScriptでスムーズスクロール）
-            st.markdown("### 🧭 セクションジャンプ")
-            
-            # HTML+JavaScriptでスムーズスクロール
-            navigation_html = """
-            <style>
-            .nav-button {
-                display: block;
-                width: 100%;
-                padding: 8px 12px;
-                margin: 4px 0;
-                background-color: #f0f2f6;
-                border: 1px solid #e6e9ef;
-                border-radius: 4px;
-                text-decoration: none;
-                color: #333;
-                transition: background-color 0.3s;
-            }
-            .nav-button:hover {
-                background-color: #e6e9ef;
-                text-decoration: none;
-                color: #333;
-            }
-            </style>
-            
-            <a href="#basic-settings" class="nav-button">📋 基本設定</a>
-            <a href="#schedule-generation" class="nav-button">🚀 スケジュール生成</a>
-            <a href="#priority-settings" class="nav-button">🎯 優先度設定</a>
-            <a href="#detail-settings" class="nav-button">⚙️ 詳細設定</a>
-            
-            <script>
-            document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-                anchor.addEventListener('click', function (e) {
-                    e.preventDefault();
-                    const target = document.querySelector(this.getAttribute('href'));
-                    if (target) {
-                        target.scrollIntoView({
-                            behavior: 'smooth',
-                            block: 'start'
-                        });
-                    }
-                });
-            });
-            </script>
-            """
-            
-            st.markdown(navigation_html, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
-            # クイックアクション
-            st.markdown("### ⚡ クイックアクション")
-            
-            if st.button("🔄 全体リセット", use_container_width=True):
-                # セッション状態をクリア
-                for key in list(st.session_state.keys()):
-                    if key != 'gui_instance':  # GUIインスタンスは保持
-                        del st.session_state[key]
-                st.success("🔄 リセット完了")
-                st.rerun()
-            
-            if st.button("📁 設定ファイル管理", use_container_width=True):
-                st.session_state.show_config_selector = True
-                st.rerun()
-    
-    def _basic_settings_section(self):
-        """基本設定セクション（従業員・年月・前月末勤務）"""
-        # 年月設定
-        col1, col2 = st.columns(2)
-        with col1:
-            year = st.number_input(
-                "年", 
-                min_value=2020, 
-                max_value=2030,
-                key='year'
-            )
-        with col2:
-            month = st.selectbox(
-                "月", 
-                range(1, 13), 
-                key='month'
-            )
-        
-        # インスタンス変数も更新（既存コード互換性のため）
-        self.year = year
-        self.month = month
-        self.n_days = calendar.monthrange(self.year, self.month)[1]
-        
-        # 前月情報表示
-        prev_year, prev_month = self._get_prev_month_info()
-        st.info(f"対象: {self.year}年{self.month}月 ({self.n_days}日間)")
-        st.info(f"前月: {prev_year}年{prev_month}月")
-        
-        st.markdown("---")
-        
-        # 従業員設定
-        st.subheader("👥 従業員設定")
-        
-        # 保存された従業員設定を取得（セッション状態優先）
-        if 'last_employees' in st.session_state and st.session_state.last_employees:
-            saved_employees = st.session_state.last_employees
-        else:
-            saved_employees = self.config_manager.get_employees()
-            # セッション状態に保存
-            st.session_state.last_employees = saved_employees
-        
-        # 従業員入力
-        employees_input = st.text_area(
-            "従業員名（1行に1名）",
-            value="\n".join(saved_employees),
-            height=120,
-            help="各行に1名ずつ従業員名を入力してください。「助勤」は自動的に最後に追加されます。"
-        )
-        
-        # 入力から従業員リスト作成
-        new_employees = [name.strip() for name in employees_input.split('\n') if name.strip()]
-        
-        # 助勤を自動追加（重複を避ける）
-        if "助勤" not in new_employees:
-            new_employees.append("助勤")
-        
-        # 保存ボタンとリセットボタン
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("💾 従業員設定を保存", key="save_employees_basic"):
-                if len(new_employees) >= 2:
-                    # Config Managerに保存
-                    self.config_manager.update_employees(new_employees)
-                    
-                    # セッション状態を強制更新
-                    st.session_state.last_employees = new_employees.copy()
-                    
-                    # 🆕 統合設定への保存
-                    if self._is_unified_config_active():
-                        # アクティブな統合設定に自動保存
-                        self._auto_save_unified_config()
-                        current_config_name = self._get_current_unified_config_name()
-                        st.success(f"✅ 統合設定 {current_config_name} に保存しました")
-                        st.success(f"👥 従業員数: {len(new_employees)}名")
-                    else:
-                        # 統合設定がない場合は新規作成を促す
-                        st.info("📝 統合設定ファイルがアクティブではありません")
-                        if st.button("🆕 新しい統合設定として保存", key="create_new_unified_basic"):
-                            config_name = "従業員設定_" + datetime.now().strftime("%Y%m%d")
-                            self._save_unified_config_complete(config_name)
-                    
-                    # 保存後は saved_employees を更新
-                    saved_employees = new_employees.copy()
-                    st.rerun()
-                else:
-                    st.error("❌ 従業員は最低2名必要です")
-        
-        with col2:
-            if st.button("🔄 デフォルトに戻す", key="reset_employees_basic"):
-                default_employees = self.config_manager.default_config["employees"]
-                self.config_manager.update_employees(default_employees)
-                st.session_state.last_employees = default_employees.copy()
-                
-                # 🆕 統合設定への自動保存
-                if self._is_unified_config_active():
-                    self._auto_save_unified_config()
-                    current_config_name = self._get_current_unified_config_name()
-                    st.success(f"✅ デフォルト従業員設定に戻し、{current_config_name} に保存しました")
-                else:
-                    st.success("✅ デフォルト従業員設定に戻しました")
-                    
-                st.rerun()
-        
-        # 現在の従業員を設定（保存されたものを使用）
-        self.employees = saved_employees
-        
-        # 変更がある場合の警告表示
-        if new_employees != saved_employees:
-            st.warning("⚠️ 従業員設定に変更があります。保存ボタンを押して保存してください。")
-        
-        st.markdown("---")
-        
-        # 前月末勤務設定
-        st.subheader("🔄 前月末勤務情報")
-        st.warning("⚠️ 前日勤務者は翌月1日目が自動的に非番になります")
-        self.prev_schedule_data = self._create_prev_schedule_input(f"{prev_year}年{prev_month}月")
-    
-    def _schedule_generation_section(self):
-        """スケジュール生成セクション"""
-        # カレンダー設定
-        st.subheader("📅 従業員別カレンダー設定")
-        
-        # カレンダー入力
-        duty_names = self.location_manager.get_duty_names()
-        
-        for emp_name in [emp for emp in self.employees if emp != "助勤"]:
-            with st.expander(f"👤 {emp_name}のカレンダー", expanded=False):
-                self._create_employee_calendar(emp_name, duty_names)
-        
-        st.markdown("---")
-        
-        # 警乗隔日制約設定
-        st.subheader("🚔 警乗隔日制約設定")
-        
-        # 警乗隔日の詳細設定
-        if st.checkbox("警乗隔日制約を有効にする", key="enable_keijo"):
-            self.keijo_base_date = st.date_input(
-                "警乗隔日の基準日", 
-                value=st.session_state.get('keijo_base_date', date(2025, 6, 1)),
-                key="keijo_base_date"
-            )
-            
-            if "keijo_base_date" in st.session_state:
-                st.session_state.keijo_base_date = st.session_state.keijo_base_date
-            
-            # 警乗パターンの説明と表示
-            if st.button("📊 警乗パターンを確認"):
-                pattern_days = self._calculate_keijo_pattern(self.year, self.month)
-                if pattern_days:
-                    st.success("✅ 警乗パターンが計算されました")
-                    pattern_str = "、".join([f"{day}日" for day in pattern_days])
-                    st.info(f"🚔 警乗勤務日: {pattern_str}")
-                else:
-                    st.warning("警乗パターンが見つかりませんでした")
-        
-        st.markdown("---")
-        
-        # カレンダー入力のプレビュー
-        st.subheader("📋 入力内容プレビュー")
-        
-        if st.session_state.calendar_data:
-            # 統計表示
-            total_holidays = 0
-            total_duties = 0
-            cross_constraints_preview = []
-            
-            for emp_name, emp_data in st.session_state.calendar_data.items():
-                h_count = len(emp_data.get('holidays', []))
-                d_count = len(emp_data.get('duty_preferences', {}))
-                
-                total_holidays += h_count
-                total_duties += d_count
-                
-                if h_count > 0 or d_count > 0:
-                    st.write(f"**{emp_name}**: 休暇{h_count}件, 勤務希望{d_count}件")
-        
-            # 月またぎ制約予測
-            for emp in self.employees:
-                if emp in self.prev_schedule_data:
-                    emp_data = self.prev_schedule_data[emp]
-                    if len(emp_data) >= 1:
-                        last_shift = emp_data[-1]
-                        if last_shift in self.location_manager.get_duty_names():
-                            cross_constraints_preview.append(f"{emp}: 前日{last_shift}勤務 → 1日目非番")
-        
-            st.write(f"**合計**: 休暇希望{total_holidays}件, 勤務希望{total_duties}件")
-            
-            if cross_constraints_preview:
-                st.write("**予想される月またぎ制約**:")
-                for constraint in cross_constraints_preview:
-                    st.write(f"- {constraint}")
-            else:
-                st.write("**月またぎ制約**: なし")
-        
-        # 生成ボタン
-        if st.button("🚀 勤務表を生成", type="primary", use_container_width=True):
-            self._generate_schedule()
-    
-    def _inline_priority_settings_section(self):
-        """インライン優先度設定セクション"""
-        st.info("📝 優先度: 3=最優先, 2=普通, 1=可能, 0=不可")
-        
-        # 現在の優先度設定取得
-        current_priorities = self.config_manager.get_employee_priorities()
-        duty_names = self.config_manager.get_duty_names()
-        
-        # 優先度選択肢
-        priority_options = ["0 (不可)", "1 (可能)", "2 (普通)", "3 (最優先)"]
-        
-        # 新しい優先度設定を格納
-        new_priorities = {}
-        
-        # 🆕 従業員リスト取得の優先順位を統合設定 > session_state > デフォルトに変更
-        # 統合設定がアクティブな場合は、常にsession_stateから取得（リセット問題回避）
-        if self._is_unified_config_active() and 'last_employees' in st.session_state:
-            # 統合設定がアクティブな場合は、session_stateを最優先
-            all_employees = st.session_state.last_employees
-            target_employees = [emp for emp in all_employees if emp != "助勤"]
-            st.info(f"📋 統合設定 {self._get_current_unified_config_name()} から従業員を取得")
-        elif 'last_employees' in st.session_state and st.session_state.last_employees:
-            all_employees = st.session_state.last_employees
-            target_employees = [emp for emp in all_employees if emp != "助勤"]
-        elif hasattr(self, 'employees') and self.employees:
-            target_employees = [emp for emp in self.employees if emp != "助勤"]
-        else:
-            # デフォルト従業員設定
-            target_employees = ["Aさん", "Bさん", "Cさん"]
-            st.warning("⚠️ デフォルト従業員を使用中。統合設定を読み込んでください。")
-        
-        st.info(f"📊 設定対象従業員: {len(target_employees)}名（助勤除く）")
-        
-        # コンパクト表示用の列設定
-        if len(target_employees) <= 6:
-            # 6名以下の場合は全員表示
-            display_employees = target_employees
-        else:
-            # 6名以上の場合はページ分割
-            st.warning("⚠️ 従業員数が多いため、ページ分割表示になります")
-            page_size = 6
-            total_pages = (len(target_employees) + page_size - 1) // page_size
-            current_page = st.selectbox("表示ページ", range(1, total_pages + 1), key="priority_page_inline") - 1
-            start_idx = current_page * page_size
-            end_idx = min(start_idx + page_size, len(target_employees))
-            display_employees = target_employees[start_idx:end_idx]
-            st.info(f"📄 ページ {current_page + 1}/{total_pages} - 従業員 {start_idx + 1}～{end_idx}名を表示")
-        
-        # 優先度設定テーブル（コンパクト表示）
-        for emp_name in display_employees:
-            st.write(f"**👤 {emp_name}**")
-            emp_priorities = current_priorities.get(emp_name, {})
-            
-            # 各勤務場所の優先度を横並びで表示
-            cols = st.columns(len(duty_names))
-            for i, duty_name in enumerate(duty_names):
-                with cols[i]:
-                    current_priority = emp_priorities.get(duty_name, 2)
-                    current_index = current_priority if 0 <= current_priority <= 3 else 2
-                    
-                    selected = st.selectbox(
-                        f"{duty_name}",
-                        priority_options,
-                        index=current_index,
-                        key=f"priority_inline_{emp_name}_{duty_name}"
-                    )
-                    
-                    # 選択された優先度を解析
-                    priority_value = int(selected.split(" ")[0])
-                    if emp_name not in new_priorities:
-                        new_priorities[emp_name] = {}
-                    new_priorities[emp_name][duty_name] = priority_value
-            
-            st.markdown("---")
-        
-        # 保存ボタン
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            if st.button("💾 優先度設定を保存", type="primary", key="save_priority_inline"):
-                # 既存の優先度設定をベースに更新
-                updated_priorities = current_priorities.copy()
-                updated_priorities.update(new_priorities)
-                
-                if self._is_unified_config_active():
-                    try:
-                        # メモリに優先度を反映
-                        self.config_manager.update_employee_priorities(updated_priorities)
-                        # 統合設定に自動保存
-                        self._auto_save_unified_config()
-                        current_config_name = self._get_current_unified_config_name()
-                        st.success(f"✅ 統合設定 {current_config_name} に保存しました")
-                        st.info(f"🔗 保存された優先度設定: {len(updated_priorities)}名分")
-                        st.rerun()  # 画面を更新して保存を反映
-                    except Exception as e:
-                        st.error(f"❌ 保存エラー: {str(e)}")
-                else:
-                    st.info("📝 統合設定ファイルがアクティブではありません")
-                    if st.button("🆕 新しい統合設定として保存", key="create_new_unified_priorities_inline"):
-                        try:
-                            self.config_manager.update_employee_priorities(updated_priorities)
-                            config_name = "優先度設定_" + datetime.now().strftime("%Y%m%d")
-                            self._save_unified_config_complete(config_name)
-                        except Exception as e:
-                            st.error(f"❌ 新規保存エラー: {str(e)}")
-        
-        with col2:
-            if st.button("📊 設定表示", key="show_priority_table_inline"):
-                # 現在の設定を表形式で表示
-                st.subheader("📋 現在の優先度設定")
-                
-                import pandas as pd
-                table_data = []
-                
-                for emp_name in target_employees:
-                    row = {"従業員": emp_name}
-                    emp_priorities = current_priorities.get(emp_name, {})
-                    
-                    for duty_name in duty_names:
-                        priority = emp_priorities.get(duty_name, 2)
-                        row[duty_name] = f"{priority} ({['❌', '🟡', '🔵', '✅'][priority]})"
-                    
-                    table_data.append(row)
-                
-                if table_data:
-                    df = pd.DataFrame(table_data)
-                    st.dataframe(df, use_container_width=True)
-    
-    def _inline_configuration_section(self):
-        """インライン詳細設定セクション（勤務場所設定）"""
-        st.info(f"現在の勤務場所数: {len(self.location_manager.duty_locations)} / 15（最大）")
-        
-        # 現在の勤務場所一覧
-        duty_locations = self.location_manager.get_duty_locations()
-        
-        # 一時的な変更フラグ
-        changes_made = False
-        
-        st.subheader("🏢 勤務場所一覧")
-        
-        for i, location in enumerate(duty_locations):
-            with st.expander(f"📍 {location['name']}", expanded=False):
-                col1, col2, col3, col4, col5 = st.columns([2, 2, 1, 1, 1])
-                
-                with col1:
-                    new_name = st.text_input(
-                        "勤務場所名",
-                        value=location["name"],
-                        key=f"loc_name_inline_{i}"
-                    )
-                
-                with col2:
-                    new_type = st.selectbox(
-                        "勤務タイプ",
-                        ["一徹勤務", "日勤", "夜勤", "その他"],
-                        index=["一徹勤務", "日勤", "夜勤", "その他"].index(location.get("type", "一徹勤務")),
-                        key=f"loc_type_inline_{i}"
-                    )
-                
-                with col3:
-                    new_duration = st.number_input(
-                        "時間",
-                        min_value=1,
-                        max_value=24,
-                        value=location.get("duration", 16),
-                        key=f"loc_duration_inline_{i}"
-                    )
-                
-                with col4:
-                    new_color = st.color_picker(
-                        "色",
-                        value=location.get("color", "#FF6B6B"),
-                        key=f"loc_color_inline_{i}"
-                    )
-                
-                with col5:
-                    if st.button("🗑️", key=f"delete_inline_{i}"):
-                        location_name = location["name"]
-                        self.location_manager.remove_duty_location(i)
-                        if self.location_manager.save_config():
-                            # 🆕 ConfigManagerに変更を同期
-                            if self.location_manager.config_manager:
-                                self.location_manager.config_manager.current_config["work_locations"] = self.location_manager.duty_locations.copy()
-                            # 🆕 統合設定がアクティブな場合は統合設定にも反映
-                            if self._is_unified_config_active():
-                                self._auto_save_unified_config()
-                                current_config_name = self._get_current_unified_config_name()
-                                st.success(f"「{location_name}」を削除し、統合設定 {current_config_name} に保存しました")
-                            else:
-                                st.success(f"「{location_name}」を削除しました")
-                            st.rerun()
-                        else:
-                            st.error("削除に失敗しました")
-                
-                # 変更があったかチェック
-                if (new_name != location["name"] or 
-                    new_type != location.get("type", "一徹勤務") or
-                    new_duration != location.get("duration", 16) or
-                    new_color != location.get("color", "#FF6B6B")):
-                    self.location_manager.update_duty_location(i, new_name, new_type, new_duration, new_color)
-                    changes_made = True
-        
-        # 変更があった場合は自動保存（統合設定対応）
-        if changes_made:
-            self.location_manager.save_config()
-            # 🆕 ConfigManagerに変更を同期
-            if self.location_manager.config_manager:
-                self.location_manager.config_manager.current_config["work_locations"] = self.location_manager.duty_locations.copy()
-            # 🆕 統合設定がアクティブな場合は統合設定にも反映
-            if self._is_unified_config_active():
-                self._auto_save_unified_config()
-                current_config_name = self._get_current_unified_config_name()
-                st.success(f"✅ 変更を統合設定 {current_config_name} に自動保存しました")
-            else:
-                st.success("✅ 変更を自動保存しました")
-        
-        # 新規追加（最大15まで）
-        if len(duty_locations) < 15:
-            st.subheader("➕ 新規勤務場所追加")
-            
-            # フォームを使用してセッション状態の問題を回避
-            with st.form("add_location_form_inline"):
-                col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
-                
-                with col1:
-                    add_name = st.text_input("新しい勤務場所名")
-                with col2:
-                    add_type = st.selectbox("勤務タイプ", ["一徹勤務", "日勤", "夜勤", "その他"])
-                with col3:
-                    add_duration = st.number_input("時間", min_value=1, max_value=24, value=16)
-                with col4:
-                    add_color = st.color_picker("色", value="#45B7D1")
-                
-                submitted = st.form_submit_button("➕ 追加", use_container_width=True)
-                
-                if submitted:
-                    if add_name.strip():
-                        # 重複チェック
-                        existing_names = [loc["name"] for loc in self.location_manager.duty_locations]
-                        if add_name.strip() in existing_names:
-                            st.error(f"「{add_name}」は既に存在します")
-                        else:
-                            self.location_manager.add_duty_location(add_name.strip(), add_type, add_duration, add_color)
-                            if self.location_manager.save_config():
-                                # 🆕 ConfigManagerに変更を同期
-                                if self.location_manager.config_manager:
-                                    self.location_manager.config_manager.current_config["work_locations"] = self.location_manager.duty_locations.copy()
-                                # 🆕 統合設定がアクティブな場合は統合設定にも反映
-                                if self._is_unified_config_active():
-                                    self._auto_save_unified_config()
-                                    current_config_name = self._get_current_unified_config_name()
-                                    st.success(f"「{add_name}」を追加し、統合設定 {current_config_name} に保存しました")
-                                else:
-                                    st.success(f"「{add_name}」を追加しました")
-                                st.rerun()
-                            else:
-                                st.error("保存に失敗しました")
-                    else:
-                        st.error("勤務場所名を入力してください")
-        else:
-            st.warning("⚠️ 最大15勤務場所まで追加できます")
-    
-    def _create_employee_calendar(self, emp_name, duty_names):
-        """従業員別カレンダー入力UI"""
-        # カレンダーデータの初期化
-        if emp_name not in st.session_state.calendar_data:
-            st.session_state.calendar_data[emp_name] = {
-                'holidays': [],
-                'duty_preferences': {}
-            }
-        
-        emp_data = st.session_state.calendar_data[emp_name]
-        
-        # 休暇希望の設定
-        st.write("**🌴 休暇希望日**")
-        
-        # 月の日付リストを生成
-        available_dates = []
-        for day in range(1, self.n_days + 1):
-            try:
-                date_obj = date(self.year, self.month, day)
-                available_dates.append(date_obj)
-            except ValueError:
-                # 無効な日付はスキップ
-                continue
-        
-        # 既存の休暇設定をdateオブジェクトに変換
-        existing_holidays = emp_data.get('holidays', [])
-        default_holidays = []
-        for holiday in existing_holidays:
-            if isinstance(holiday, str):
-                try:
-                    # 文字列の場合はdateオブジェクトに変換
-                    holiday_date = datetime.strptime(holiday, '%Y-%m-%d').date()
-                    if holiday_date in available_dates:
-                        default_holidays.append(holiday_date)
-                except (ValueError, TypeError):
-                    continue
-            elif isinstance(holiday, date):
-                # 既にdateオブジェクトの場合
-                if holiday in available_dates:
-                    default_holidays.append(holiday)
-        
-        # 休暇希望の複数選択
-        selected_holidays = st.multiselect(
-            "休暇希望日を選択",
-            options=available_dates,
-            default=default_holidays,
-            format_func=lambda d: f"{d.month}月{d.day}日({['月','火','水','木','金','土','日'][d.weekday()]})",
-            key=f"holidays_{emp_name}"
-        )
-        
-        # セッション状態に保存
-        st.session_state.calendar_data[emp_name]['holidays'] = selected_holidays
-        
-        st.markdown("---")
-        
-        # 勤務場所希望の設定
-        st.write("**🏢 勤務場所希望**")
-        
-        # 日別の勤務場所希望設定
-        duty_preferences = emp_data.get('duty_preferences', {})
-        
-        # 日付範囲選択
-        col1, col2 = st.columns(2)
-        with col1:
-            start_day = st.number_input(
-                "開始日",
-                min_value=1,
-                max_value=self.n_days,
-                value=1,
-                key=f"start_day_{emp_name}"
-            )
-        
-        with col2:
-            end_day = st.number_input(
-                "終了日",
-                min_value=start_day,
-                max_value=self.n_days,
-                value=min(start_day + 6, self.n_days),
-                key=f"end_day_{emp_name}"
-            )
-        
-        # 勤務場所選択
-        if duty_names:
-            selected_duty = st.selectbox(
-                "希望勤務場所",
-                options=["なし"] + duty_names,
-                key=f"duty_pref_{emp_name}"
-            )
-            
-            if selected_duty != "なし":
-                if st.button(f"📅 {start_day}日〜{end_day}日に{selected_duty}を設定", key=f"set_duty_{emp_name}"):
-                    # 選択された日付範囲に勤務場所希望を設定
-                    for day in range(start_day, end_day + 1):
-                        duty_preferences[day] = selected_duty
-                    
-                    # セッション状態に保存
-                    st.session_state.calendar_data[emp_name]['duty_preferences'] = duty_preferences
-                    
-                    # 統合設定への自動保存
-                    if self._is_unified_config_active():
-                        self._auto_save_unified_config()
-                    
-                    st.success(f"✅ {start_day}日〜{end_day}日に{selected_duty}勤務希望を設定しました")
-                    st.rerun()
-        
-        # 現在の設定表示
-        if duty_preferences:
-            st.write("**📋 現在の勤務場所希望**")
-            pref_text = []
-            for day, duty in sorted(duty_preferences.items()):
-                pref_text.append(f"{day}日: {duty}")
-            st.info("、".join(pref_text))
-            
-            # 個別削除ボタン
-            if st.button(f"🗑️ 勤務場所希望をクリア", key=f"clear_duty_{emp_name}"):
-                st.session_state.calendar_data[emp_name]['duty_preferences'] = {}
-                
-                # 統合設定への自動保存
-                if self._is_unified_config_active():
-                    self._auto_save_unified_config()
-                
-                st.success("✅ 勤務場所希望をクリアしました")
-                st.rerun()
-        
-        # 休暇希望の表示
-        if selected_holidays:
-            st.write("**📋 現在の休暇希望**")
-            holiday_text = []
-            for holiday in sorted(selected_holidays):
-                holiday_text.append(f"{holiday.month}月{holiday.day}日")
-            st.info("、".join(holiday_text))
-        
-        # 統合設定への自動保存（休暇希望変更時）
-        if selected_holidays != emp_data.get('holidays', []):
-            if self._is_unified_config_active():
-                self._auto_save_unified_config()
-    
-    def _create_footer(self):
-        """フッター"""
-        st.markdown("---")
-        st.markdown("💡 **Phase 1**: 優先度設定と設定保存機能が完全動作します")
-        st.markdown("🎯 **重要**: 優先度が勤務表に反映され、設定保存で再利用可能です")
-        
-        # システム情報
-        with st.expander("ℹ️ システム情報"):
-            st.write("**1ページ統合設計の利点**:")
-            st.write("- ✅ **ページ切り替えなし**: 全ての設定が1ページに統合")
-            st.write("- ✅ **サイドバーナビゲーション**: 各セクションへ瞬時に移動")
-            st.write("- ✅ **状態保持**: セッション状態の管理が単純で堅牢")
-            st.write("- ✅ **自動保存**: 統合設定への即座の反映")
-    
     def _configuration_page(self):
         """設定ページ（修正版）"""
         st.header("⚙️ 詳細設定")
         
-        # 🔧 詳細設定ページ開始時に統合設定から最新状態を確認
-        if self._is_unified_config_active():
-            current_config_name = self._get_current_unified_config_name()
-            st.info(f"🔗 アクティブ設定: {current_config_name}")
-            st.info("📝 変更は自動的に統合設定に保存されます")
-        
         # 戻るボタン
         if st.button("← メインページに戻る"):
-            # 🔧 戻る前に統合設定への自動保存を確実に実行
-            if self._is_unified_config_active():
-                try:
-                    # LocationManagerの変更をConfigManagerに同期
-                    if self.location_manager.config_manager:
-                        self.location_manager.config_manager.current_config["work_locations"] = self.location_manager.duty_locations.copy()
-                    # 統合設定に保存
-                    self._auto_save_unified_config()
-                    current_config_name = self._get_current_unified_config_name()
-                    st.success(f"✅ 変更を統合設定 {current_config_name} に保存しました")
-                except Exception as e:
-                    st.error(f"❌ 保存エラー: {str(e)}")
-            
             st.session_state.show_config = False
             st.rerun()
         
@@ -2217,17 +1682,9 @@ class CompleteGUI:
                 if st.button("🗑️", key=f"delete_{i}"):
                     location_name = location["name"]
                     self.location_manager.remove_duty_location(i)
-                    if self.location_manager.save_config():
-                        # 🆕 ConfigManagerに変更を同期
-                        if self.location_manager.config_manager:
-                            self.location_manager.config_manager.current_config["work_locations"] = self.location_manager.duty_locations.copy()
-                        # 🆕 統合設定がアクティブな場合は統合設定にも反映
-                        if self._is_unified_config_active():
-                            self._auto_save_unified_config()
-                            current_config_name = self._get_current_unified_config_name()
-                            st.success(f"「{location_name}」を削除し、統合設定 {current_config_name} に保存しました")
-                        else:
-                            st.success(f"「{location_name}」を削除しました")
+                    # 統一設定に保存
+                    if self.unified_config.update_work_locations(self.location_manager.duty_locations):
+                        st.success(f"「{location_name}」を削除しました")
                         st.rerun()
                     else:
                         st.error("削除に失敗しました")
@@ -2242,19 +1699,13 @@ class CompleteGUI:
             
             st.markdown("---")
         
-        # 変更があった場合は自動保存（統合設定対応）
+        # 変更があった場合は自動保存
         if changes_made:
-            self.location_manager.save_config()
-            # 🆕 ConfigManagerに変更を同期
-            if self.location_manager.config_manager:
-                self.location_manager.config_manager.current_config["work_locations"] = self.location_manager.duty_locations.copy()
-            # 🆕 統合設定がアクティブな場合は統合設定にも反映
-            if self._is_unified_config_active():
-                self._auto_save_unified_config()
-                current_config_name = self._get_current_unified_config_name()
-                st.success(f"✅ 変更を統合設定 {current_config_name} に自動保存しました")
-            else:
+            if self.unified_config.update_work_locations(self.location_manager.duty_locations):
                 st.success("✅ 変更を自動保存しました")
+                st.rerun()
+            else:
+                st.error("自動保存に失敗しました")
         
         # 新規追加（最大15まで）
         if len(duty_locations) < 15:
@@ -2283,17 +1734,9 @@ class CompleteGUI:
                             st.error(f"「{add_name}」は既に存在します")
                         else:
                             self.location_manager.add_duty_location(add_name.strip(), add_type, add_duration, add_color)
-                            if self.location_manager.save_config():
-                                # 🆕 ConfigManagerに変更を同期
-                                if self.location_manager.config_manager:
-                                    self.location_manager.config_manager.current_config["work_locations"] = self.location_manager.duty_locations.copy()
-                                # 🆕 統合設定がアクティブな場合は統合設定にも反映
-                                if self._is_unified_config_active():
-                                    self._auto_save_unified_config()
-                                    current_config_name = self._get_current_unified_config_name()
-                                    st.success(f"「{add_name}」を追加し、統合設定 {current_config_name} に保存しました")
-                                else:
-                                    st.success(f"「{add_name}」を追加しました")
+                            # 統一設定に保存
+                            if self.unified_config.update_work_locations(self.location_manager.duty_locations):
+                                st.success(f"「{add_name}」を追加しました")
                                 st.rerun()
                             else:
                                 st.error("保存に失敗しました")
@@ -2302,63 +1745,17 @@ class CompleteGUI:
         else:
             st.warning("⚠️ 最大15勤務場所まで追加できます")
         
-        # 🆕 保存セクション
-        st.markdown("---")
-        st.subheader("💾 設定保存")
-        
-        # 🆕 設定名入力（アクティブな統合設定名を自動反映）
-        default_config_name = "新しい設定"
-        if self._is_unified_config_active():
-            current_config_name = self._get_current_unified_config_name()
-            default_config_name = current_config_name
-            st.info(f"🔗 アクティブ設定: {current_config_name}")
-        
-        config_name = st.text_input(
-            "設定名",
-            value=default_config_name,
-            help="統合設定ファイルの名前です",
-            key="location_config_name"
-        )
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            # 保存ボタン
-            if st.button("💾 全設定を保存", type="primary", key="save_location_config"):
-                # 🆕 統合設定への保存
-                if self._is_unified_config_active():
-                    self.location_manager.save_config()
-                    self._auto_save_unified_config()
-                    current_config_name = self._get_current_unified_config_name()
-                    st.success(f"✅ 統合設定 {current_config_name} に保存しました")
-                    st.info(f"📁 保存先: {st.session_state.current_unified_config}")
-                else:
-                    if config_name.strip():
-                        self.location_manager.save_config()
-                        self._save_unified_config_complete(config_name.strip())
-                        st.success(f"✅ 新しい統合設定 {config_name.strip()} として保存しました")
-                    else:
-                        st.error("設定名を入力してください")
-        
-        with col2:
-            # 🆕 設定ファイル選択機能
-            if st.button("📁 設定ファイル選択", key="select_config_locations"):
-                st.session_state.show_config_selector = True
-                st.rerun()
-        
-        # 🆕 設定ファイル選択画面
-        if st.session_state.get('show_config_selector', False):
-            self._show_config_selector()
+        # 保存ボタン
+        if st.button("💾 設定を保存", type="primary"):
+            # 統一設定に保存
+            if self.unified_config.update_work_locations(self.location_manager.duty_locations):
+                st.success("✅ 設定を保存しました")
+            else:
+                st.error("保存に失敗しました")
     
     def _priority_settings_page(self):
         """優先度設定ページ（Phase 1）"""
         st.header("🎯 従業員優先度設定")
-        
-        # 🆕 アクティブな統合設定の表示
-        if self._is_unified_config_active():
-            current_config_name = self._get_current_unified_config_name()
-            st.success(f"🔗 アクティブ: {current_config_name}")
-            st.info("📝 変更は自動的に統合設定に保存されます")
         
         # 戻るボタン
         if st.button("← メインページに戻る"):
@@ -2377,22 +1774,16 @@ class CompleteGUI:
         # 新しい優先度設定を格納
         new_priorities = {}
         
-        # 🆕 従業員リスト取得の優先順位を統合設定 > session_state > デフォルトに変更
-        # 統合設定がアクティブな場合は、常にsession_stateから取得（リセット問題回避）
-        if self._is_unified_config_active() and 'last_employees' in st.session_state:
-            # 統合設定がアクティブな場合は、session_stateを最優先
+        # 動的な従業員設定（助勤除く）
+        # セッション状態から従業員リストを取得
+        if 'last_employees' in st.session_state and st.session_state.last_employees:
             all_employees = st.session_state.last_employees
-            target_employees = [emp for emp in all_employees if emp != "助勤"]
-            st.info(f"📋 統合設定 {self._get_current_unified_config_name()} から従業員を取得")
-        elif 'last_employees' in st.session_state and st.session_state.last_employees:
-            all_employees = st.session_state.last_employees
-            target_employees = [emp for emp in all_employees if emp != "助勤"]
+            target_employees = [emp for emp in all_employees if emp != "助勤"]  # 制限なしで全従業員表示
         elif hasattr(self, 'employees') and self.employees:
-            target_employees = [emp for emp in self.employees if emp != "助勤"]
+            target_employees = [emp for emp in self.employees if emp != "助勤"]  # 制限なしで全従業員表示
         else:
             # デフォルト従業員設定
             target_employees = ["Aさん", "Bさん", "Cさん"]
-            st.warning("⚠️ デフォルト従業員を使用中。統合設定を読み込んでください。")
         
         st.info(f"📊 設定対象従業員: {len(target_employees)}名（助勤除く）")
         
@@ -2449,86 +1840,39 @@ class CompleteGUI:
         # 保存セクション
         st.subheader("💾 設定保存")
         
-        # 🆕 設定名入力（アクティブな統合設定名を自動反映）
-        default_config_name = "新しい設定"
-        if self._is_unified_config_active():
-            current_config_name = self._get_current_unified_config_name()
-            default_config_name = current_config_name
-        
         config_name = st.text_input(
             "設定名",
-            value=default_config_name,
-            help="統合設定ファイルの名前です",
-            key="priority_config_name"
+            value="新しい設定",
+            help="日本語名も使用可能です"
         )
         
-        col1, col2, col3 = st.columns([2, 1, 1])
+        col1, col2, col3 = st.columns(3)
         
         with col1:
-            if st.button("💾 全設定を保存", type="primary"):
-                # 🆕 統合設定への保存
-                if self._is_unified_config_active():
-                    try:
-                        # メモリに優先度を反映
-                        self.config_manager.update_employee_priorities(new_priorities)
-                        # 統合設定に自動保存
-                        self._auto_save_unified_config()
-                        current_config_name = self._get_current_unified_config_name()
-                        current_file = st.session_state.current_unified_config
-                        st.success(f"✅ 統合設定 {current_config_name} に保存しました")
-                        st.info(f"🔗 保存された優先度設定: {len(new_priorities)}名分")
-                        st.info(f"📁 保存先: {current_file}")
-                        st.rerun()  # 画面を更新して保存を反映
-                    except Exception as e:
-                        st.error(f"❌ 保存エラー: {str(e)}")
+            if st.button("💾 一時保存", type="primary"):
+                # 統一設定に保存
+                if self.unified_config.update_priorities(new_priorities):
+                    st.success("✅ 優先度設定を保存しました")
                 else:
-                    st.info("📝 統合設定ファイルがアクティブではありません")
-                    if st.button("🆕 新しい統合設定として保存", key="create_new_unified_priorities"):
-                        try:
-                            self.config_manager.update_employee_priorities(new_priorities)
-                            config_name = "優先度設定_" + datetime.now().strftime("%Y%m%d")
-                            self._save_unified_config_complete(config_name)
-                        except Exception as e:
-                            st.error(f"❌ 新規保存エラー: {str(e)}")
+                    st.error("保存に失敗しました")
         
         with col2:
-            # 🆕 全設定ファイル選択機能
-            if st.button("📁 設定ファイル選択"):
-                st.session_state.show_config_selector = True
-                st.rerun()
+            if st.button("📁 ファイル保存"):
+                if config_name.strip():
+                    filename = self.config_manager.save_config(config_name.strip(), new_priorities)
+                    if filename:
+                        st.success(f"✅ {filename}として保存しました")
+                    else:
+                        st.error("⚠ 保存に失敗しました")
+                else:
+                    st.error("設定名を入力してください")
         
         with col3:
             if st.button("🔄 デフォルトに戻す"):
-                # 🆕 統合設定がアクティブな場合は、現在の従業員に対するデフォルト設定を生成
-                if self._is_unified_config_active():
-                    # 現在の従業員リストに対してデフォルト優先度を設定
-                    current_employees = st.session_state.get('last_employees', [])
-                    duty_names = self.config_manager.get_duty_names()
-                    
-                    # 全従業員に対して一律の優先度設定（例：すべて「普通」）
-                    default_priorities = {}
-                    for emp in current_employees:
-                        if emp != "助勤":  # 助勤は除外
-                            default_priorities[emp] = {duty: 2 for duty in duty_names}  # 2=普通
-                    
-                    self.config_manager.update_employee_priorities(default_priorities)
-                    st.success("✅ 現在の従業員に対してデフォルト設定を適用しました")
-                    
-                    # 統合設定に自動保存
-                    self._auto_save_unified_config()
-                    current_config_name = self._get_current_unified_config_name()
-                    st.info(f"🔗 統合設定 {current_config_name} に自動保存しました")
-                else:
-                    # 従来のデフォルト復帰
-                    default_priorities = self.config_manager.default_config["employee_priorities"]
-                    self.config_manager.update_employee_priorities(default_priorities)
-                    st.success("✅ デフォルト設定に戻しました")
-                
+                default_priorities = self.config_manager.default_config["employee_priorities"]
+                self.config_manager.update_employee_priorities(default_priorities)
+                st.success("✅ デフォルト設定に戻しました")
                 st.rerun()
-        
-        # 🆕 設定ファイル選択画面
-        if st.session_state.get('show_config_selector', False):
-            self._show_config_selector()
         
         # プレビューセクション
         with st.expander("🔍 優先度マトリックスプレビュー"):
@@ -2565,56 +1909,97 @@ class CompleteGUI:
             self._create_control_panel()
     
     def _create_sidebar(self):
-        """サイドバー（Phase 1: 設定管理対応）"""
+        """サイドバー（統一保存UI付き）"""
         st.header("📋 基本設定")
         
-        # 🆕 旧設定システムは廃止 - 統合設定のみ使用
-        st.info("📋 統合設定システムを使用してください")
-        st.info("💡 従来の設定ファイルは backup_configs/ に保存されています")
+        # === 統一保存UI（新規追加）===
+        with st.expander("💾 設定の保存・読み込み", expanded=True):
+            # 現在の設定名を表示
+            st.info(f"現在の設定: **{self.unified_config.get_config_name()}**")
+            
+            # 保存
+            st.subheader("💾 保存")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("📝 上書き保存", use_container_width=True):
+                    if self.unified_config.save_config():
+                        st.success("✅ 保存しました")
+                        st.balloons()
+                    else:
+                        st.error("保存に失敗しました")
+            
+            with col2:
+                save_name = st.text_input("設定名", placeholder="例: 夏季シフト")
+                if st.button("📁 名前を付けて保存", use_container_width=True):
+                    if save_name:
+                        filename = self.unified_config.save_as_profile(save_name)
+                        if filename:
+                            st.success(f"✅ {filename} として保存しました")
+                        else:
+                            st.error("保存に失敗しました")
+                    else:
+                        st.error("設定名を入力してください")
+            
+            # 読み込み
+            st.subheader("📂 読み込み")
+            profiles = self.unified_config.get_profile_list()
+            
+            if profiles:
+                profile_options = {f"{p['name']} ({p['date']})": p['filepath'] for p in profiles}
+                selected_profile = st.selectbox("保存済み設定", options=list(profile_options.keys()))
+                
+                if st.button("📥 読み込む", use_container_width=True):
+                    filepath = profile_options[selected_profile]
+                    if self.unified_config.load_profile(filepath):
+                        st.success("✅ 設定を読み込みました")
+                        # すべてのデータをリセット
+                        st.session_state.clear()
+                        st.rerun()
+                    else:
+                        st.error("読み込みに失敗しました")
+            else:
+                st.info("保存済みの設定はありません")
         
         st.markdown("---")
         
-        # 🆕 統合設定管理セクション（メインシステム）
-        if self.unified_config:
-            self._create_unified_config_section()
-            st.markdown("---")
+        # Phase 1: 設定ファイル選択
+        st.subheader("📁 設定選択")
+        config_files = self.config_manager.get_config_files()
         
-        # 🆕 現在アクティブな統合設定の表示
-        if self._is_unified_config_active():
-            current_config_name = self._get_current_unified_config_name()
-            st.success(f"🔗 アクティブ: {current_config_name}")
-            st.info("📝 設定変更は自動的に保存されます")
-            
-            # 自動保存ON/OFF切り替え
-            auto_save = st.checkbox(
-                "自動保存を有効化", 
-                value=st.session_state.get('unified_config_auto_save', True),
-                key='unified_config_auto_save',
-                help="チェックを外すと手動保存のみになります"
+        if config_files:
+            selected_file = st.selectbox(
+                "設定ファイル",
+                ["--- 選択してください ---"] + config_files,
+                key="config_file_select"
             )
             
-            if not auto_save:
-                if st.button("💾 手動保存", type="secondary"):
-                    self._auto_save_unified_config()
-                    st.success("✅ 手動保存しました")
-            
-            st.markdown("---")
+            if selected_file != "--- 選択してください ---":
+                if st.button(f"📥 {selected_file}を読み込み"):
+                    if self.config_manager.load_config(selected_file):
+                        st.session_state.selected_config = selected_file
+                        # 従業員設定も強制更新
+                        employees = self.config_manager.get_employees()
+                        st.session_state.last_employees = employees.copy()
+                        # 関連データをクリア
+                        st.session_state.calendar_data = {}
+                        st.success(f"✅ {selected_file}を読み込みました")
+                        st.success(f"👥 従業員: {len(employees)}名 - {', '.join(employees[:5])}{'...' if len(employees) > 5 else ''}")
+                        st.rerun()
+                    else:
+                        st.error("❗ 設定の読み込みに失敗しました")
+        else:
+            st.info("設定ファイルがありません")
         
-        # 年月設定（最優先）（🆕 セッション状態と同期）
-        year = st.number_input(
-            "年", 
-            min_value=2020, 
-            max_value=2030,
-            key='year'
-        )
-        month = st.selectbox(
-            "月", 
-            range(1, 13), 
-            key='month'
-        )
-        # インスタンス変数も更新（既存コード互換性のため）
-        self.year = year
-        self.month = month
+        # 現在の設定表示
+        if st.session_state.selected_config:
+            st.success(f"現在: {st.session_state.selected_config}")
+        
+        st.markdown("---")
+        
+        # 年月設定（最優先）
+        self.year = st.number_input("年", value=2025, min_value=2020, max_value=2030)
+        self.month = st.selectbox("月", range(1, 13), index=5)
         self.n_days = calendar.monthrange(self.year, self.month)[1]
         
         # 前月情報表示
@@ -2634,15 +2019,12 @@ class CompleteGUI:
         st.markdown("---")
         st.header("🚁 警乗設定")
         
-        # 警乗起点日設定（🆕 セッション状態と同期）
-        keijo_base_date = st.date_input(
+        # 警乗起点日設定
+        self.keijo_base_date = st.date_input(
             "警乗隔日の起点日",
-            value=st.session_state.get('keijo_base_date', date(2025, 6, 1)),
-            key='keijo_base_date',
+            value=date(2025, 6, 1),
             help="この日から偶数日に警乗が入ります"
         )
-        # インスタンス変数も更新（既存コード互換性のため）
-        self.keijo_base_date = keijo_base_date
         
         # パターン表示
         if self.keijo_base_date and "警乗" in duty_names:
@@ -2705,33 +2087,15 @@ class CompleteGUI:
         col1, col2, col3 = st.columns([1, 1, 2])
         
         with col1:
-            if st.button("💾 全設定を保存", type="primary"):
+            if st.button("💾 従業員設定を保存", type="primary"):
                 if len(new_employees) >= 2:
-                    # Config Managerに保存
-                    self.config_manager.update_employees(new_employees)
-                    
-                    # セッション状態を強制更新
-                    st.session_state.last_employees = new_employees.copy()
-                    
-                    # 🆕 統合設定への保存
-                    if self._is_unified_config_active():
-                        # アクティブな統合設定に自動保存
-                        self._auto_save_unified_config()
-                        current_config_name = self._get_current_unified_config_name()
-                        current_file = st.session_state.current_unified_config
-                        st.success(f"✅ 統合設定 {current_config_name} に保存しました")
-                        st.success(f"👥 従業員数: {len(new_employees)}名")
-                        st.info(f"📁 保存先: {current_file}")
+                    # 統一設定に保存
+                    if self.unified_config.update_employees(new_employees):
+                        st.success("✅ 従業員設定を保存しました")
+                        st.session_state.last_employees = new_employees.copy()
+                        st.rerun()
                     else:
-                        # 統合設定がない場合は新規作成を促す
-                        st.info("📝 統合設定ファイルがアクティブではありません")
-                        if st.button("🆕 新しい統合設定として保存", key="create_new_unified"):
-                            config_name = "従業員設定_" + datetime.now().strftime("%Y%m%d")
-                            self._save_unified_config_complete(config_name)
-                    
-                    # 保存後は saved_employees を更新
-                    saved_employees = new_employees.copy()
-                    st.rerun()
+                        st.error("保存に失敗しました")
                 else:
                     st.error("❌ 従業員は最低2名必要です")
         
@@ -2740,15 +2104,7 @@ class CompleteGUI:
                 default_employees = self.config_manager.default_config["employees"].copy()
                 self.config_manager.current_config["employees"] = default_employees
                 st.session_state.last_employees = default_employees
-                
-                # 🆕 統合設定への自動保存
-                if self._is_unified_config_active():
-                    self._auto_save_unified_config()
-                    current_config_name = self._get_current_unified_config_name()
-                    st.success(f"✅ デフォルト従業員設定に戻し、{current_config_name} に保存しました")
-                else:
-                    st.success("✅ デフォルト従業員設定に戻しました")
-                    
+                st.success("✅ デフォルト従業員設定に戻しました")
                 st.rerun()
         
         # 従業員リストが変更されたかチェック（表示用）
@@ -2774,11 +2130,11 @@ class CompleteGUI:
         else:
             return self.year, self.month - 1
     
-    def _create_prev_schedule_input(self, prev_month_display):
+    def _create_prev_schedule_input(self, prev_month):
         """前月末勤務入力UI（重複キー修正版）"""
         prev_schedule = {}
         PREV_DAYS_COUNT = 3  # 前月末3日分
-        prev_year, prev_month = self._get_prev_month_info()
+        prev_year, _ = self._get_prev_month_info()
         prev_days = calendar.monthrange(prev_year, prev_month)[1]
         
         duty_options = ["未入力"] + self.location_manager.get_duty_names() + ["非番", "休"]
@@ -3204,69 +2560,9 @@ class CompleteGUI:
             for constraint in result.get('cross_constraints', []):
                 st.write(f"- {constraint}")
         
-        # 優先度設定適用状況
-        with st.expander("🎯 優先度設定適用状況"):
-            self._show_priority_application_status(result)
-        
         # デバッグ情報
         with st.expander("🔍 パース結果デバッグ"):
             self._show_debug_info(result.get('debug_info', []))
-    
-    def _show_priority_application_status(self, result):
-        """優先度設定適用状況の表示"""
-        try:
-            # 現在の優先度設定を取得
-            current_priorities = self.config_manager.get_employee_priorities()
-            
-            if not current_priorities:
-                st.warning("⚠️ 優先度設定が見つかりません")
-                return
-            
-            st.write("**現在の優先度設定**:")
-            
-            # 優先度設定を表形式で表示
-            import pandas as pd
-            priority_data = []
-            
-            for emp_name, priorities in current_priorities.items():
-                row = {"従業員": emp_name}
-                for duty_name, priority in priorities.items():
-                    priority_emoji = ["❌", "🟡", "🔵", "✅"][priority] if 0 <= priority <= 3 else "❓"
-                    row[duty_name] = f"{priority} {priority_emoji}"
-                priority_data.append(row)
-            
-            if priority_data:
-                df = pd.DataFrame(priority_data)
-                st.dataframe(df, use_container_width=True)
-                
-                # 優先度の効果分析
-                st.write("**優先度効果分析**:")
-                preferences = result.get('preferences', {})
-                priority_effects = 0
-                
-                for (emp_id, day, duty_id), penalty in preferences.items():
-                    if penalty != 0:  # ペナルティが設定されている場合
-                        priority_effects += 1
-                
-                st.write(f"- 適用されたペナルティ/報酬: {priority_effects}件")
-                
-                # デバッグ情報から優先度関連を抽出
-                debug_info = result.get('debug_info', [])
-                priority_debug = [info for info in debug_info if "優先度" in info or "ペナルティ" in info]
-                
-                if priority_debug:
-                    st.write("**優先度適用詳細**:")
-                    for info in priority_debug[:10]:  # 最初の10件のみ表示
-                        st.write(f"- {info}")
-                    if len(priority_debug) > 10:
-                        st.write(f"... 他 {len(priority_debug) - 10} 件")
-                else:
-                    st.warning("⚠️ 優先度適用ログが見つかりません")
-            else:
-                st.warning("⚠️ 優先度設定データがありません")
-                
-        except Exception as e:
-            st.error(f"❌ 優先度状況表示エラー: {str(e)}")
     
     def _show_debug_info(self, debug_info):
         """デバッグ情報表示"""
@@ -3282,309 +2578,6 @@ class CompleteGUI:
                     st.info(info)
         else:
             st.info("デバッグ情報はありません")
-    
-    def _create_unified_config_section(self):
-        """🆕 統合設定管理セクション"""
-        st.header("📁 設定管理")
-        
-        # 統合設定ファイル一覧
-        unified_configs = self.unified_config.get_unified_config_files()
-        
-        if unified_configs:
-            st.subheader("📥 設定読み込み")
-            selected_config = st.selectbox(
-                "設定ファイル",
-                ["--- 選択してください ---"] + unified_configs,
-                key="unified_config_select"
-            )
-            
-            if selected_config != "--- 選択してください ---":
-                # プレビュー表示
-                preview = self.unified_config.get_config_preview(selected_config)
-                if "error" not in preview:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.text(f"📝 名前: {preview['config_name']}")
-                        st.text(f"📅 作成: {preview['created_date']}")
-                        st.text(f"👥 従業員: {preview['employees_count']}名")
-                    with col2:
-                        st.text(f"🏢 勤務場所: {preview['work_locations_count']}箇所")
-                        st.text(f"📋 カレンダー: {'有' if preview['has_calendar_data'] else '無'}")
-                        st.text(f"🚔 警乗: {'有効' if preview['keijo_enabled'] else '無効'}")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if st.button(f"📥 {selected_config}を読み込み", type="primary", key="load_unified"):
-                        self._load_unified_config_complete(selected_config)
-                
-                with col2:
-                    if st.button("💾 現在設定で上書き保存", key="overwrite_unified"):
-                        config_name = selected_config.split('_')[0]  # ファイル名から設定名を抽出
-                        self._save_unified_config_complete(config_name)
-        
-        # 新規設定保存
-        st.subheader("💾 新規設定")
-        new_config_name = st.text_input("設定名", placeholder="金沢警備隊", key="new_unified_config_name")
-        
-        if st.button("💾 全設定を保存", type="primary", key="save_new_unified"):
-            if new_config_name.strip():
-                self._save_unified_config_complete(new_config_name.strip())
-            else:
-                st.error("設定名を入力してください")
-    
-    def _load_unified_config_complete(self, filename):
-        """統合設定の完全読み込み"""
-        try:
-            config = self.unified_config.load_complete_config(filename)
-            
-            if config:
-                # 🆕 現在アクティブな統合設定を記録
-                st.session_state.current_unified_config = filename
-                st.session_state.unified_config_auto_save = True
-                
-                # 🔧 重要: location_managerの状態を統合設定に合わせて強制更新
-                work_locations = config.get("work_locations", [])
-                if work_locations:
-                    self.location_manager.duty_locations = work_locations.copy()
-                    # ConfigManagerの状態も同期
-                    self.config_manager.current_config["work_locations"] = work_locations.copy()
-                    
-                # 🔧 重要: 従業員設定も強制更新
-                employees = config.get("employees", [])
-                if employees:
-                    st.session_state.last_employees = employees.copy()
-                    self.config_manager.current_config["employees"] = employees.copy()
-                
-                st.success(f"✅ {filename}を完全読み込みしました")
-                st.success("🔄 設定反映のため画面を更新します...")
-                st.info(f"🔗 以降の設定変更は自動的に{filename}に保存されます")
-                
-                # 読み込み後の情報表示
-                st.info(f"📋 反映内容: 従業員{len(employees)}名, 勤務場所{len(work_locations)}箇所")
-                
-                # 即座にUIを更新
-                st.rerun()
-            else:
-                st.error("❌ 設定の読み込みに失敗しました")
-                
-        except Exception as e:
-            st.error(f"❌ 設定読み込みエラー: {str(e)}")
-    
-    def _initialize_from_existing_config(self):
-        """初期化時に既存の統合設定があれば読み込み"""
-        try:
-            if 'current_unified_config' in st.session_state and st.session_state.current_unified_config:
-                filename = st.session_state.current_unified_config
-                
-                # ファイルが存在するか確認
-                if self.unified_config:
-                    available_configs = self.unified_config.get_unified_config_files()
-                    if filename in available_configs:
-                        # 設定を静かに読み込み（メッセージなし）
-                        config = self.unified_config.load_complete_config(filename, force_update_session=False)
-                        
-                        if config:
-                            # location_managerとconfig_managerに設定を反映
-                            work_locations = config.get("work_locations", [])
-                            if work_locations:
-                                self.location_manager.duty_locations = work_locations.copy()
-                                self.config_manager.current_config["work_locations"] = work_locations.copy()
-                            
-                            employees = config.get("employees", [])
-                            if employees:
-                                self.config_manager.current_config["employees"] = employees.copy()
-                            
-                            # 優先度設定の反映
-                            priorities = config.get("employee_priorities", {})
-                            if priorities:
-                                self.config_manager.current_config["employee_priorities"] = priorities.copy()
-                    else:
-                        # ファイルが見つからない場合はセッション状態をクリア
-                        st.session_state.current_unified_config = None
-                        
-        except Exception as e:
-            # 初期化時のエラーは静かに処理
-            pass
-    
-    def _ensure_config_sync(self):
-        """統合設定との同期を確認（毎回実行時）"""
-        try:
-            if (self._is_unified_config_active() and 
-                'current_unified_config' in st.session_state and 
-                st.session_state.current_unified_config):
-                
-                # 統合設定ファイルの最終更新時刻を確認
-                filename = st.session_state.current_unified_config
-                if self.unified_config and filename in self.unified_config.get_unified_config_files():
-                    filepath = os.path.join(self.unified_config.configs_dir, filename)
-                    
-                    # ファイルの変更時刻をチェック（他の処理で更新されている可能性）
-                    if os.path.exists(filepath):
-                        # 設定を再読み込み（静かに実行）
-                        config = self.unified_config.load_complete_config(filename, force_update_session=False)
-                        
-                        if config:
-                            # LocationManagerとConfigManagerに最新設定を反映
-                            work_locations = config.get("work_locations", [])
-                            if work_locations and work_locations != self.location_manager.duty_locations:
-                                self.location_manager.duty_locations = work_locations.copy()
-                                self.config_manager.current_config["work_locations"] = work_locations.copy()
-                            
-                            employees = config.get("employees", [])
-                            if employees and employees != st.session_state.get('last_employees', []):
-                                st.session_state.last_employees = employees.copy()
-                                self.config_manager.current_config["employees"] = employees.copy()
-                            
-                            priorities = config.get("employee_priorities", {})
-                            if priorities:
-                                self.config_manager.current_config["employee_priorities"] = priorities.copy()
-                    
-        except Exception as e:
-            # 同期エラーは静かに処理（ユーザーには表示しない）
-            pass
-    
-    def _save_unified_config_complete(self, config_name):
-        """統合設定の完全保存"""
-        try:
-            # 現在のGUI状態を収集
-            gui_state = {
-                'last_employees': getattr(self, 'employees', st.session_state.get('last_employees', [])),
-                'keijo_base_date': getattr(self, 'keijo_base_date', date(2025, 6, 1)),
-                'year': getattr(self, 'year', 2025),
-                'month': getattr(self, 'month', 6)
-            }
-            
-            filename = self.unified_config.save_complete_config(
-                config_name, 
-                st.session_state, 
-                gui_state
-            )
-            
-            if filename:
-                # 🆕 新規保存の場合は現在アクティブ設定に設定
-                st.session_state.current_unified_config = filename
-                st.session_state.unified_config_auto_save = True
-                
-                st.success(f"✅ {filename}として統合保存しました")
-                st.info("📋 保存内容: 従業員・勤務場所・優先度・年休申請・警乗設定・すべて")
-                st.info(f"🔗 以降の設定変更は自動的に{filename}に保存されます")
-                
-                # 保存後の詳細情報表示
-                employees_count = len(gui_state.get('last_employees', []))
-                locations_count = len(self.location_manager.get_duty_locations())
-                calendar_data_count = len(st.session_state.get('calendar_data', {}))
-                
-                st.text(f"💾 詳細: 従業員{employees_count}名, 勤務場所{locations_count}箇所, カレンダー項目{calendar_data_count}件")
-            else:
-                st.error("❌ 保存に失敗しました")
-                
-        except Exception as e:
-            st.error(f"❌ 設定保存エラー: {str(e)}")
-    
-    def _auto_save_unified_config(self):
-        """🆕 統合設定の自動保存"""
-        try:
-            if (st.session_state.get('current_unified_config') and 
-                st.session_state.get('unified_config_auto_save', True)):
-                
-                current_config = st.session_state.current_unified_config
-                config_name = current_config.split('_')[0]  # ファイル名から設定名を抽出
-                
-                # 現在のGUI状態を収集
-                gui_state = {
-                    'last_employees': getattr(self, 'employees', st.session_state.get('last_employees', [])),
-                    'keijo_base_date': getattr(self, 'keijo_base_date', date(2025, 6, 1)),
-                    'year': getattr(self, 'year', 2025),
-                    'month': getattr(self, 'month', 6)
-                }
-                
-                # 既存ファイルを上書き保存
-                success = self.unified_config.overwrite_config(
-                    current_config,
-                    config_name,
-                    st.session_state,
-                    gui_state
-                )
-                
-                if success:
-                    # サイレント保存（UIには表示しない）
-                    pass
-                else:
-                    # エラー時のみ表示
-                    st.warning(f"⚠️ 自動保存に失敗: {current_config}")
-                    
-        except Exception as e:
-            # エラー時のみ表示
-            st.warning(f"⚠️ 自動保存エラー: {str(e)}")
-    
-    def _is_unified_config_active(self):
-        """🆕 統合設定がアクティブかチェック"""
-        return st.session_state.get('current_unified_config') is not None
-    
-    def _get_current_unified_config_name(self):
-        """🆕 現在の統合設定名を取得"""
-        current_config = st.session_state.get('current_unified_config')
-        if current_config:
-            return current_config.split('_')[0]  # ファイル名から設定名を抽出
-        return None
-    
-    def _show_config_selector(self):
-        """🆕 設定ファイル選択画面"""
-        st.markdown("---")
-        st.header("📁 設定ファイル選択")
-        
-        # 閉じるボタン
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            if st.button("❌ 閉じる"):
-                st.session_state.show_config_selector = False
-                st.rerun()
-        
-        # 統合設定ファイル一覧
-        unified_configs = self.unified_config.get_unified_config_files()
-        
-        if unified_configs:
-            st.subheader("📋 利用可能な設定ファイル")
-            
-            for filename in unified_configs:
-                # プレビュー取得
-                preview = self.unified_config.get_config_preview(filename)
-                
-                if "error" not in preview:
-                    # ファイル情報表示
-                    with st.expander(f"📄 {filename}", expanded=False):
-                        col1, col2, col3 = st.columns([2, 2, 1])
-                        
-                        with col1:
-                            st.text(f"📝 設定名: {preview['config_name']}")
-                            st.text(f"📅 作成日: {preview['created_date']}")
-                            st.text(f"👥 従業員: {preview['employees_count']}名")
-                        
-                        with col2:
-                            st.text(f"🏢 勤務場所: {preview['work_locations_count']}箇所")
-                            st.text(f"📋 カレンダー: {'有' if preview['has_calendar_data'] else '無'}")
-                            st.text(f"🚔 警乗: {'有効' if preview['keijo_enabled'] else '無効'}")
-                        
-                        with col3:
-                            # 選択ボタン
-                            if st.button(f"✅ この設定を選択", key=f"select_{filename}"):
-                                # 設定を読み込み
-                                self._load_unified_config_complete(filename)
-                                st.session_state.show_config_selector = False
-                                st.success(f"✅ {filename} を読み込みました")
-                                st.rerun()
-                            
-                            # 現在アクティブかチェック
-                            if st.session_state.get('current_unified_config') == filename:
-                                st.success("🔗 アクティブ")
-                else:
-                    st.error(f"❌ {filename}: 読み込みエラー")
-        else:
-            st.info("📝 利用可能な設定ファイルがありません")
-            st.info("💡 メインページで新しい設定を作成してください")
-        
-        st.markdown("---")
 
 
 # =================== メイン実行 ===================
@@ -3592,11 +2585,7 @@ class CompleteGUI:
 def main():
     """メイン関数"""
     try:
-        # 🔧 CompleteGUIインスタンスをセッション状態で保持（重要な修正）
-        if 'gui_instance' not in st.session_state:
-            st.session_state.gui_instance = CompleteGUI()
-        
-        gui = st.session_state.gui_instance
+        gui = CompleteGUI()
         gui.run()
         
         # フッター

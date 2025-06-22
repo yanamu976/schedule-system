@@ -19,36 +19,6 @@
       "type": "一徹勤務",
       "duration": 16,
       "color": "#ffd1b6"
-    },
-    {
-      "name": "防B",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#96CEB4"
-    },
-    {
-      "name": "防災A",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#FFEAA7"
-    },
-    {
-      "name": "百A",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#45B7D1"
-    },
-    {
-      "name": "百B",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#45B7D1"
-    },
-    {
-      "name": "王様",
-      "type": "一徹勤務",
-      "duration": 16,
-      "color": "#45B7D1"
     }
   ],
   "holiday_type": {
@@ -79,13 +49,14 @@
     "3": 0
   },
   "employees": [
-    "Aさん",
-    "Bさん",
-    "Cさん",
-    "Dさん",
-    "Eさん",
-    "Fさん",
-    "Gさん",
+    "中谷さん",
+    "宮崎さん",
+    "木村さん",
+    "田中さん",
+    "谷村さん",
+    "新蔵さん",
+    "川口さん",
+    "杉本さん",
     "助勤"
   ]
 }

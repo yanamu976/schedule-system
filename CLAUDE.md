@@ -44,12 +44,12 @@ This is a Japanese shift scheduling system (勤務表自動作成システム) d
 
 ### Running the Application
 ```bash
-# Main Streamlit GUI
-streamlit run schedule_gui.py
-# or
-streamlit run complete_schedule.py
+# Main Streamlit GUI (Fixed version with single-page design)
+streamlit run schedule_gui_fixed.py
 
-# Alternative GUI version
+# Alternative versions
+streamlit run schedule_gui.py
+streamlit run complete_schedule.py
 streamlit run schedule_gui0604.py
 ```
 

@@ -1840,39 +1840,31 @@ class CompleteGUI:
         # 保存セクション
         st.subheader("💾 設定保存")
         
-        config_name = st.text_input(
-            "設定名",
-            value="新しい設定",
-            help="日本語名も使用可能です"
-        )
+        # 現在の設定名を表示
+        current_config_name = self.unified_config.get_config_name()
+        st.info(f"保存先: {current_config_name}")
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("💾 一時保存", type="primary"):
-                # 統一設定に保存
+            if st.button("💾 現在の設定に保存", type="primary"):
+                # 統一設定システムに優先度を更新して保存
                 if self.unified_config.update_priorities(new_priorities):
-                    st.success("✅ 優先度設定を保存しました")
-                else:
-                    st.error("保存に失敗しました")
-        
-        with col2:
-            if st.button("📁 ファイル保存"):
-                if config_name.strip():
-                    filename = self.config_manager.save_config(config_name.strip(), new_priorities)
-                    if filename:
-                        st.success(f"✅ {filename}として保存しました")
+                    if self.unified_config.save_config():
+                        st.success(f"✅ {current_config_name}に優先度設定を保存しました")
                     else:
                         st.error("⚠ 保存に失敗しました")
                 else:
-                    st.error("設定名を入力してください")
+                    st.error("優先度設定の更新に失敗しました")
         
-        with col3:
+        with col2:
             if st.button("🔄 デフォルトに戻す"):
                 default_priorities = self.config_manager.default_config["employee_priorities"]
-                self.config_manager.update_employee_priorities(default_priorities)
-                st.success("✅ デフォルト設定に戻しました")
-                st.rerun()
+                if self.unified_config.update_priorities(default_priorities):
+                    st.success("✅ デフォルト設定に戻しました")
+                    st.rerun()
+                else:
+                    st.error("デフォルト設定への復元に失敗しました")
         
         # プレビューセクション
         with st.expander("🔍 優先度マトリックスプレビュー"):
@@ -1960,40 +1952,6 @@ class CompleteGUI:
                         st.error("読み込みに失敗しました")
             else:
                 st.info("保存済みの設定はありません")
-        
-        st.markdown("---")
-        
-        # Phase 1: 設定ファイル選択
-        st.subheader("📁 設定選択")
-        config_files = self.config_manager.get_config_files()
-        
-        if config_files:
-            selected_file = st.selectbox(
-                "設定ファイル",
-                ["--- 選択してください ---"] + config_files,
-                key="config_file_select"
-            )
-            
-            if selected_file != "--- 選択してください ---":
-                if st.button(f"📥 {selected_file}を読み込み"):
-                    if self.config_manager.load_config(selected_file):
-                        st.session_state.selected_config = selected_file
-                        # 従業員設定も強制更新
-                        employees = self.config_manager.get_employees()
-                        st.session_state.last_employees = employees.copy()
-                        # 関連データをクリア
-                        st.session_state.calendar_data = {}
-                        st.success(f"✅ {selected_file}を読み込みました")
-                        st.success(f"👥 従業員: {len(employees)}名 - {', '.join(employees[:5])}{'...' if len(employees) > 5 else ''}")
-                        st.rerun()
-                    else:
-                        st.error("❗ 設定の読み込みに失敗しました")
-        else:
-            st.info("設定ファイルがありません")
-        
-        # 現在の設定表示
-        if st.session_state.selected_config:
-            st.success(f"現在: {st.session_state.selected_config}")
         
         st.markdown("---")
         

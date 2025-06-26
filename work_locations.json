@@ -1,0 +1,26 @@
+{
+  "duty_locations": [
+    {
+      "name": "駅A",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#6bff74"
+    },
+    {
+      "name": "指令",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#8e91ff"
+    },
+    {
+      "name": "警乗",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#ffd1b6"
+    }
+  ],
+  "holiday_type": {
+    "name": "休暇",
+    "color": "#FFEAA7"
+  }
+}

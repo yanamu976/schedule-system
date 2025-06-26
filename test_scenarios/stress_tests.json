@@ -1,0 +1,77 @@
+{
+  "heavy_holidays_start": {
+    "name": "月初休暇集中攻撃",
+    "description": "全員が月初3日間休暇希望",
+    "employees": ["田中", "佐藤", "鈴木", "高橋", "伊藤"],
+    "holidays": {
+      "田中": [1, 2, 3],
+      "佐藤": [1, 2, 3],
+      "鈴木": [1, 2, 3],
+      "高橋": [2, 3, 4],
+      "伊藤": [1, 3, 4]
+    },
+    "prev_month_duties": [],
+    "special_constraints": [],
+    "expected_difficulty": "hard"
+  },
+  "heavy_holidays_middle": {
+    "name": "月中連続休暇攻撃",
+    "description": "全員が月中に連続休暇希望",
+    "employees": ["田中", "佐藤", "鈴木", "高橋"],
+    "holidays": {
+      "田中": [15, 16, 17, 18],
+      "佐藤": [14, 15, 16, 17],
+      "鈴木": [16, 17, 18, 19],
+      "高橋": [15, 16, 17, 18]
+    },
+    "prev_month_duties": [],
+    "special_constraints": [],
+    "expected_difficulty": "extreme"
+  },
+  "golden_week_chaos": {
+    "name": "GW期間想定",
+    "description": "GW連休期間での大量休暇申請",
+    "employees": ["田中", "佐藤", "鈴木", "高橋", "伊藤", "山田"],
+    "holidays": {
+      "田中": [3, 4, 5, 6, 7],
+      "佐藤": [4, 5, 6],
+      "鈴木": [1, 5, 6, 7],
+      "高橋": [3, 4, 5],
+      "伊藤": [6, 7, 8],
+      "山田": [4, 5, 6, 7]
+    },
+    "prev_month_duties": [],
+    "special_constraints": [],
+    "expected_difficulty": "extreme"
+  },
+  "cross_month_nitetu": {
+    "name": "月またぎ二徹パターン",
+    "description": "全員前月末勤務で1日目制約",
+    "employees": ["田中", "佐藤", "鈴木", "高橋"],
+    "holidays": {
+      "田中": [15, 16],
+      "佐藤": [20, 21]
+    },
+    "prev_month_duties": [
+      {"employee": "田中", "date": -1, "duty": "勤務"},
+      {"employee": "佐藤", "date": -1, "duty": "勤務"},
+      {"employee": "鈴木", "date": -1, "duty": "勤務"},
+      {"employee": "高橋", "date": -1, "duty": "勤務"}
+    ],
+    "special_constraints": ["no_work_after_nitetu"],
+    "expected_difficulty": "hard"
+  },
+  "minimum_staff": {
+    "name": "最小人員運用",
+    "description": "3人での極限運用テスト",
+    "employees": ["田中", "佐藤", "鈴木"],
+    "holidays": {
+      "田中": [10, 11, 25, 26],
+      "佐藤": [5, 6, 20, 21],
+      "鈴木": [15, 16, 28, 29]
+    },
+    "prev_month_duties": [],
+    "special_constraints": [],
+    "expected_difficulty": "extreme"
+  }
+}

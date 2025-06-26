@@ -1,0 +1,61 @@
+{
+  "config_name": "デフォルト設定",
+  "created_date": "2025-06-22",
+  "work_locations": [
+    {
+      "name": "駅A",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FF6B6B"
+    },
+    {
+      "name": "指令",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FF8E8E"
+    },
+    {
+      "name": "警乗",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FFB6B6"
+    }
+  ],
+  "holiday_type": {
+    "name": "休暇",
+    "color": "#FFEAA7"
+  },
+  "employees": [
+    "Aさん",
+    "Bさん",
+    "Cさん",
+    "Dさん",
+    "Eさん",
+    "Fさん",
+    "Gさん",
+    "助勤"
+  ],
+  "employee_priorities": {
+    "Aさん": {
+      "駅A": 3,
+      "指令": 2,
+      "警乗": 0
+    },
+    "Bさん": {
+      "駅A": 3,
+      "指令": 3,
+      "警乗": 3
+    },
+    "Cさん": {
+      "駅A": 0,
+      "指令": 0,
+      "警乗": 3
+    }
+  },
+  "priority_weights": {
+    "0": 1000,
+    "1": 10,
+    "2": 5,
+    "3": 0
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "normal_3people": {
+    "name": "通常3人パターン",
+    "description": "標準的な3人での勤務表作成",
+    "employees": ["田中", "佐藤", "鈴木"],
+    "holidays": {},
+    "prev_month_duties": [],
+    "special_constraints": [],
+    "expected_difficulty": "easy"
+  },
+  "normal_5people": {
+    "name": "5人編成テスト",
+    "description": "5人での基本動作確認",
+    "employees": ["田中", "佐藤", "鈴木", "高橋", "伊藤"],
+    "holidays": {
+      "田中": [5, 6],
+      "佐藤": [12, 13]
+    },
+    "prev_month_duties": [],
+    "special_constraints": [],
+    "expected_difficulty": "easy"
+  },
+  "normal_8people": {
+    "name": "8人編成テスト",
+    "description": "大規模編成での動作確認",
+    "employees": ["田中", "佐藤", "鈴木", "高橋", "伊藤", "山田", "渡辺", "中村"],
+    "holidays": {
+      "田中": [1, 15],
+      "佐藤": [8, 22],
+      "鈴木": [10],
+      "高橋": [25, 26]
+    },
+    "prev_month_duties": [],
+    "special_constraints": [],
+    "expected_difficulty": "medium"
+  }
+}

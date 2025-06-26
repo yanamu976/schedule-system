@@ -1840,6 +1840,7 @@ class CompleteGUI:
         # 保存セクション
         st.subheader("💾 設定保存")
         
+<<<<<<< HEAD
         config_name = st.text_input(
             "設定名",
             value="新しい設定",
@@ -1873,6 +1874,33 @@ class CompleteGUI:
                 self.config_manager.update_employee_priorities(default_priorities)
                 st.success("✅ デフォルト設定に戻しました")
                 st.rerun()
+=======
+        # 現在の設定名を表示
+        current_config_name = self.unified_config.get_config_name()
+        st.info(f"保存先: {current_config_name}")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("💾 現在の設定に保存", type="primary"):
+                # 統一設定システムに優先度を更新して保存
+                if self.unified_config.update_priorities(new_priorities):
+                    if self.unified_config.save_config():
+                        st.success(f"✅ {current_config_name}に優先度設定を保存しました")
+                    else:
+                        st.error("⚠ 保存に失敗しました")
+                else:
+                    st.error("優先度設定の更新に失敗しました")
+        
+        with col2:
+            if st.button("🔄 デフォルトに戻す"):
+                default_priorities = self.config_manager.default_config["employee_priorities"]
+                if self.unified_config.update_priorities(default_priorities):
+                    st.success("✅ デフォルト設定に戻しました")
+                    st.rerun()
+                else:
+                    st.error("デフォルト設定への復元に失敗しました")
+>>>>>>> 62cc84a81e337f0e000da979d3c2f353a169955f
         
         # プレビューセクション
         with st.expander("🔍 優先度マトリックスプレビュー"):

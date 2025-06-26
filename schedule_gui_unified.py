@@ -1900,7 +1900,6 @@ class CompleteGUI:
                     st.rerun()
                 else:
                     st.error("デフォルト設定への復元に失敗しました")
->>>>>>> 62cc84a81e337f0e000da979d3c2f353a169955f
         
         # プレビューセクション
         with st.expander("🔍 優先度マトリックスプレビュー"):

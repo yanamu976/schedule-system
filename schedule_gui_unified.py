@@ -1626,13 +1626,29 @@ class CompleteGUI:
         st.markdown("---")
     
     def _configuration_page(self):
-        """設定ページ（修正版）"""
-        st.header("⚙️ 詳細設定")
+        """担務変更ページ（修正版）"""
+        st.header("⚙️ 担務変更")
         
         # 戻るボタン
         if st.button("← メインページに戻る"):
             st.session_state.show_config = False
             st.rerun()
+        
+        # === 現在の設定表示と保存のみ ===
+        with st.expander("💾 設定情報", expanded=True):
+            # 現在の設定名を表示（変更不可）
+            st.info(f"現在の設定: **{self.unified_config.get_config_name()}**")
+            st.caption("📝 設定ファイルの変更・新規作成はメインページで行ってください")
+            
+            # 保存のみ
+            if st.button("💾 設定を保存", use_container_width=True, key="config_save_only", type="primary"):
+                if self.unified_config.save_config():
+                    st.success("✅ 設定を保存しました")
+                    st.balloons()
+                else:
+                    st.error("保存に失敗しました")
+        
+        st.markdown("---")
         
         st.subheader("勤務場所設定")
         st.info(f"現在の勤務場所数: {len(self.location_manager.duty_locations)} / 15（最大）")
@@ -1745,22 +1761,45 @@ class CompleteGUI:
         else:
             st.warning("⚠️ 最大15勤務場所まで追加できます")
         
-        # 保存ボタン
-        if st.button("💾 設定を保存", type="primary"):
-            # 統一設定に保存
+        st.markdown("---")
+        
+        # 簡易保存機能（下部に配置）
+        st.markdown("### 💾 設定を保存")
+        if st.button("💾 設定を保存", use_container_width=True, type="primary", key="config_bottom_save"):
+            # 勤務場所設定を統一設定に反映してから保存
             if self.unified_config.update_work_locations(self.location_manager.duty_locations):
-                st.success("✅ 設定を保存しました")
+                if self.unified_config.save_config():
+                    st.success("✅ 担務設定を保存しました")
+                    st.balloons()
+                else:
+                    st.error("保存に失敗しました")
             else:
-                st.error("保存に失敗しました")
+                st.error("担務設定の更新に失敗しました")
     
     def _priority_settings_page(self):
-        """優先度設定ページ（Phase 1）"""
-        st.header("🎯 従業員優先度設定")
+        """勤務優先度設定ページ（Phase 1）"""
+        st.header("🎯 勤務優先度設定")
         
         # 戻るボタン
         if st.button("← メインページに戻る"):
             st.session_state.show_priority_settings = False
             st.rerun()
+        
+        # === 現在の設定表示と保存のみ ===
+        with st.expander("💾 設定情報", expanded=True):
+            # 現在の設定名を表示（変更不可）
+            st.info(f"現在の設定: **{self.unified_config.get_config_name()}**")
+            st.caption("📝 設定ファイルの変更・新規作成はメインページで行ってください")
+            
+            # 保存のみ
+            if st.button("💾 設定を保存", use_container_width=True, key="priority_save_only", type="primary"):
+                if self.unified_config.save_config():
+                    st.success("✅ 設定を保存しました")
+                    st.balloons()
+                else:
+                    st.error("保存に失敗しました")
+        
+        st.markdown("---")
         
         st.info("📝 優先度: 3=最優先, 2=普通, 1=可能, 0=不可")
         
@@ -1837,54 +1876,20 @@ class CompleteGUI:
             new_priorities[emp_name] = emp_priorities
             st.markdown("---")
         
-        # 保存セクション
-        st.subheader("💾 設定保存")
-        
-        config_name = st.text_input(
-            "設定名",
-            value="新しい設定",
-            help="日本語名も使用可能です"
-        )
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("💾 一時保存", type="primary"):
-                # 統一設定に保存
-                if self.unified_config.update_priorities(new_priorities):
+        # 簡易保存機能（下部に配置）
+        st.markdown("### 💾 設定を保存")
+        if st.button("💾 設定を保存", use_container_width=True, type="primary", key="bottom_save"):
+            # 優先度設定を統一設定に反映してから保存
+            if self.unified_config.update_priorities(new_priorities):
+                if self.unified_config.save_config():
                     st.success("✅ 優先度設定を保存しました")
+                    st.balloons()
                 else:
                     st.error("保存に失敗しました")
+            else:
+                st.error("優先度設定の更新に失敗しました")
         
-        with col2:
-            if st.button("📁 ファイル保存"):
-                if config_name.strip():
-                    filename = self.config_manager.save_config(config_name.strip(), new_priorities)
-                    if filename:
-                        st.success(f"✅ {filename}として保存しました")
-                    else:
-                        st.error("⚠ 保存に失敗しました")
-                else:
-                    st.error("設定名を入力してください")
-        
-        with col3:
-            if st.button("🔄 デフォルトに戻す"):
-                default_priorities = self.config_manager.default_config["employee_priorities"]
-                self.config_manager.update_employee_priorities(default_priorities)
-                st.success("✅ デフォルト設定に戻しました")
-                st.rerun()
-        
-        with col2:
-            if st.button("💾 名前を付けて保存", type="primary"):
-                if config_name.strip():
-                    filename = self.config_manager.save_config(config_name.strip(), new_priorities)
-                    if filename:
-                        st.success(f"✅ {filename}として保存しました")
-                        st.balloons()
-                    else:
-                        st.error("⚠ 保存に失敗しました")
-                else:
-                    st.error("設定名を入力してください")
+        st.markdown("---")
         
         # プレビューセクション
         with st.expander("🔍 優先度マトリックスプレビュー"):
@@ -2016,13 +2021,13 @@ class CompleteGUI:
         elif "警乗" not in duty_names:
             st.warning("⚠️ 「警乗」勤務場所が設定されていません")
         
-        # Phase 1: 優先度設定ボタン
-        if st.button("🎯 優先度設定", use_container_width=True):
+        # Phase 1: 勤務優先度ボタン
+        if st.button("🎯 勤務優先度", use_container_width=True):
             st.session_state.show_priority_settings = True
             st.rerun()
         
-        # 詳細設定ボタン（勤務場所の下に配置）
-        if st.button("⚙️ 詳細設定", use_container_width=True):
+        # 担務変更ボタン（勤務場所の下に配置）
+        if st.button("⚙️ 担務変更", use_container_width=True):
             st.session_state.show_config = True
             st.rerun()
         

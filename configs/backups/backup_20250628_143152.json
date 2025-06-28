@@ -1,0 +1,113 @@
+{
+  "version": "2.0",
+  "config_name": "金沢28",
+  "created_date": "2025-06-23 06:03:25",
+  "last_updated": "2025-06-28 14:26:57",
+  "work_locations": [
+    {
+      "name": "駅A",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FF6B6B"
+    },
+    {
+      "name": "指令",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FF8E8E"
+    },
+    {
+      "name": "警乗",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FFB6B6"
+    }
+  ],
+  "holiday_type": {
+    "name": "休暇",
+    "color": "#FFEAA7"
+  },
+  "employees": [
+    "中谷",
+    "宮崎",
+    "木村",
+    "田中",
+    "谷村",
+    "新蔵",
+    "川口",
+    "杉本",
+    "助勤"
+  ],
+  "employee_priorities": {
+    "中谷": {
+      "駅A": 1,
+      "指令": 3,
+      "警乗": 0
+    },
+    "宮崎": {
+      "駅A": 0,
+      "指令": 0,
+      "警乗": 3
+    },
+    "木村": {
+      "駅A": 0,
+      "指令": 3,
+      "警乗": 0
+    },
+    "田中": {
+      "駅A": 1,
+      "指令": 3,
+      "警乗": 0
+    },
+    "谷村": {
+      "駅A": 2,
+      "指令": 2,
+      "警乗": 2
+    },
+    "新蔵": {
+      "駅A": 2,
+      "指令": 2,
+      "警乗": 2
+    },
+    "川口": {
+      "駅A": 2,
+      "指令": 0,
+      "警乗": 2
+    },
+    "杉本": {
+      "駅A": 3,
+      "指令": 0,
+      "警乗": 0
+    }
+  },
+  "priority_weights": {
+    "0": 1000,
+    "1": 10,
+    "2": 5,
+    "3": 0
+  },
+  "keijo_base_date": "2025-06-01",
+  "constraint_weights": {
+    "RELIEF": 10,
+    "HOLIDAY": 50,
+    "NITETU": 15,
+    "N2_GAP": 30,
+    "PREF": 5,
+    "CROSS_MONTH": 20,
+    "PRIORITY": 25
+  },
+  "saved_as_profile": "2025-06-28 11:50:57",
+  "calendar_data": {
+    "year": 2025,
+    "month": 6,
+    "calendar_data": {
+      "中谷": {
+        "holidays": [
+          "2025-06-03",
+          "2025-06-04"
+        ],
+        "duty_preferences": {}
+      }
+    }
+  }
+}

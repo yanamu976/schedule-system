@@ -43,7 +43,8 @@ class ConfigurationManager:
             "employee_priorities": {
                 "Aさん": {"駅A": 3, "指令": 2, "警乗": 0},
                 "Bさん": {"駅A": 3, "指令": 3, "警乗": 3},
-                "Cさん": {"駅A": 0, "指令": 0, "警乗": 3}
+                "Cさん": {"駅A": 0, "指令": 0, "警乗": 3},
+                "助勤": {"駅A": 1, "指令": 1, "警乗": 1}
             },
             "priority_weights": {"0": 1000, "1": 10, "2": 5, "3": 0}
         }
@@ -64,7 +65,7 @@ class ConfigurationManager:
         return sorted(files)
     
     def load_config(self, filename=None):
-        """設定読み込み"""
+        """設定読み込み（希望データ対応）"""
         if filename is None:
             return False
         
@@ -78,8 +79,21 @@ class ConfigurationManager:
             print(f"設定読み込みエラー: {e}")
             return False
     
-    def save_config(self, config_name, custom_priorities=None):
-        """設定保存"""
+    def get_saved_calendar_data(self):
+        """保存された希望データを取得"""
+        calendar_data = self.current_config.get("calendar_data", {})
+        # 日付文字列をdateオブジェクトに変換
+        converted_data = {}
+        for emp_name, emp_data in calendar_data.items():
+            converted_data[emp_name] = {
+                'holidays': [datetime.fromisoformat(d).date() if isinstance(d, str) and '-' in d else d 
+                           for d in emp_data.get('holidays', [])],
+                'duty_preferences': emp_data.get('duty_preferences', {})
+            }
+        return converted_data
+    
+    def save_config(self, config_name, custom_priorities=None, calendar_data=None):
+        """設定保存（希望データ対応）"""
         # ファイル名生成（日本語対応）
         date_str = datetime.now().strftime("%Y%m%d")
         safe_name = config_name.replace(" ", "_").replace("/", "_")
@@ -93,6 +107,16 @@ class ConfigurationManager:
         
         if custom_priorities:
             config_data["employee_priorities"] = custom_priorities
+            
+        if calendar_data:
+            # 希望データを保存可能な形式に変換
+            serializable_calendar_data = {}
+            for emp_name, emp_data in calendar_data.items():
+                serializable_calendar_data[emp_name] = {
+                    'holidays': [d.isoformat() if hasattr(d, 'isoformat') else str(d) for d in emp_data.get('holidays', [])],
+                    'duty_preferences': emp_data.get('duty_preferences', {})
+                }
+            config_data["calendar_data"] = serializable_calendar_data
         
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -205,9 +229,10 @@ class UnifiedConfigurationManager:
         }
     
     def save_config(self, config_data=None):
-        """設定を保存（自動バックアップ付き）"""
+        """設定を保存（修正版）"""
+        # 引数が渡されない場合は現在の設定を使用（後方互換性）
         if config_data is None:
-            config_data = self.config
+            config_data = self.config.copy()  # 重要：copyで副作用を防ぐ
         
         # バックアップを作成
         if os.path.exists(self.config_file):
@@ -227,7 +252,8 @@ class UnifiedConfigurationManager:
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, ensure_ascii=False, indent=2)
-            self.config = config_data
+            # 保存成功後、インスタンスの状態も更新
+            self.config = config_data.copy()  # copyで参照の問題を防ぐ
             return True
         except Exception as e:
             print(f"保存エラー: {e}")
@@ -259,13 +285,34 @@ class UnifiedConfigurationManager:
     def load_profile(self, profile_path):
         """プロファイルを読み込む"""
         try:
+            print(f"[DEBUG] プロファイル読み込み: {profile_path}")
+            
             with open(profile_path, 'r', encoding='utf-8') as f:
-                self.config = json.load(f)
-                self.save_config()  # 現在の設定として保存
-                return True
+                profile_data = json.load(f)
+            
+            # 希望データの有無を確認
+            if "calendar_data" in profile_data:
+                print(f"[DEBUG] プロファイルの希望データ: {profile_data['calendar_data']}")
+            else:
+                print(f"[DEBUG] このプロファイルには希望データがありません")
+            
+            # プロファイルのデータをそのまま設定（希望データも含む）
+            self.config = profile_data
+            
+            # save_config()は呼ばない
+            return True
         except Exception as e:
             print(f"プロファイル読み込みエラー: {e}")
             return False
+    
+    def save_calendar_data(self, calendar_data_with_date):
+        """希望データ専用の保存メソッド（新規追加）"""
+        # 現在の設定を安全にコピー
+        new_config = self.config.copy()
+        # 希望データ部分のみ更新
+        new_config["calendar_data"] = calendar_data_with_date
+        # 明示的に保存
+        return self.save_config(new_config)
     
     def get_profile_list(self):
         """利用可能なプロファイルのリスト"""
@@ -365,8 +412,8 @@ class UnifiedConfigurationManager:
         current_employees = set(self.config.get("employees", []))
         current_priorities = self.config.get("employee_priorities", {})
         
-        # 助勤は除外
-        target_employees = {emp for emp in current_employees if emp != "助勤"}
+        # 全従業員対象（助勤も含む）
+        target_employees = current_employees
         
         # 新しい従業員にデフォルト優先度を設定
         for emp in target_employees:
@@ -1592,6 +1639,58 @@ class CompleteGUI:
             st.session_state.show_priority_settings = False
         if 'last_employees' not in st.session_state:
             st.session_state.last_employees = self.unified_config.get_employees()
+            
+        # アプリ起動時に保存された希望データを自動復元
+        self._auto_restore_calendar_data()
+    
+    def _auto_restore_calendar_data(self):
+        """
+        アプリ起動時の自動復元（修正版）
+        Streamlitの再実行に対応
+        """
+        try:
+            # セッション状態が空の場合のみ復元
+            if not st.session_state.calendar_data:
+                saved_calendar = self.unified_config.config.get("calendar_data", {})
+                if saved_calendar and "calendar_data" in saved_calendar:
+                    saved_data = saved_calendar["calendar_data"]
+                    restored_data = self._deserialize_calendar_data(saved_data)
+                    st.session_state.calendar_data = restored_data.copy()
+        except Exception as e:
+            # エラーが発生しても処理を続行
+            pass
+    
+    def _verify_saved_data(self):
+        """保存後のデータ検証（デバッグ用）"""
+        # ファイルから直接読み込んで確認
+        try:
+            with open("configs/unified_settings.json", 'r', encoding='utf-8') as f:
+                saved_config = json.load(f)
+                if "calendar_data" in saved_config:
+                    calendar_data = saved_config["calendar_data"]
+                    if "calendar_data" in calendar_data:
+                        st.info(f"✅ ファイル確認: {calendar_data['calendar_data']}")
+                    else:
+                        st.error("❌ ファイルに希望データが見つかりません")
+        except Exception as e:
+            st.error(f"❌ ファイル読み込みエラー: {e}")
+    
+    def _extract_calendar_data_from_config(self):
+        """現在の統一設定から希望データを抽出"""
+        try:
+            saved_calendar = self.unified_config.config.get("calendar_data", {})
+            if saved_calendar:
+                # 新形式（年月情報付き）の場合
+                if "year" in saved_calendar and "month" in saved_calendar and "calendar_data" in saved_calendar:
+                    saved_data = saved_calendar["calendar_data"]
+                    return self._deserialize_calendar_data(saved_data)
+                # 旧形式の場合
+                elif saved_calendar:
+                    return self._deserialize_calendar_data(saved_calendar)
+            return {}
+        except Exception as e:
+            # エラーが発生した場合は空のデータを返す
+            return {}
     
     def run(self):
         """メイン実行"""
@@ -1813,18 +1912,18 @@ class CompleteGUI:
         # 新しい優先度設定を格納
         new_priorities = {}
         
-        # 動的な従業員設定（助勤除く）
+        # 動的な従業員設定（助勤も含む）
         # セッション状態から従業員リストを取得
         if 'last_employees' in st.session_state and st.session_state.last_employees:
             all_employees = st.session_state.last_employees
-            target_employees = [emp for emp in all_employees if emp != "助勤"]  # 制限なしで全従業員表示
+            target_employees = all_employees  # 助勤も含む全従業員表示
         elif hasattr(self, 'employees') and self.employees:
-            target_employees = [emp for emp in self.employees if emp != "助勤"]  # 制限なしで全従業員表示
+            target_employees = self.employees  # 助勤も含む全従業員表示
         else:
             # デフォルト従業員設定
             target_employees = ["Aさん", "Bさん", "Cさん"]
         
-        st.info(f"📊 設定対象従業員: {len(target_employees)}名（助勤除く）")
+        st.info(f"📊 設定対象従業員: {len(target_employees)}名（助勤含む）")
         
         if len(target_employees) > 20:
             st.warning("⚠️ 従業員数が多いため、ページ分割表示を推奨します")
@@ -1969,9 +2068,30 @@ class CompleteGUI:
                 if st.button("📥 読み込む", use_container_width=True):
                     filepath = profile_options[selected_profile]
                     if self.unified_config.load_profile(filepath):
+                        # 年月設定を保持
+                        current_year = getattr(self, 'year', 2025)
+                        current_month = getattr(self, 'month', 6)
+                        
                         st.success("✅ 設定を読み込みました")
-                        # すべてのデータをリセット
+                        # セッション状態をクリア
                         st.session_state.clear()
+                        
+                        # プロファイルから希望データを取得（新しいプロファイルのデータ）
+                        profile_calendar_data = self.unified_config.config.get("calendar_data", {})
+                        if profile_calendar_data:
+                            # 新形式（年月情報付き）の場合
+                            if "calendar_data" in profile_calendar_data:
+                                saved_data = profile_calendar_data["calendar_data"]
+                                restored_data = self._deserialize_calendar_data(saved_data)
+                                st.session_state.calendar_data = restored_data.copy()
+                            # 旧形式の場合
+                            else:
+                                restored_data = self._deserialize_calendar_data(profile_calendar_data)
+                                st.session_state.calendar_data = restored_data.copy()
+                        
+                        # 年月設定を復元
+                        st.session_state.preserved_year = current_year
+                        st.session_state.preserved_month = current_month
                         st.rerun()
                     else:
                         st.error("読み込みに失敗しました")
@@ -1981,8 +2101,12 @@ class CompleteGUI:
         st.markdown("---")
         
         # 年月設定（最優先）
-        self.year = st.number_input("年", value=2025, min_value=2020, max_value=2030)
-        self.month = st.selectbox("月", range(1, 13), index=5)
+        # プロファイル読み込み後の年月を復元
+        default_year = st.session_state.get('preserved_year', 2025)
+        default_month = st.session_state.get('preserved_month', 6)
+        
+        self.year = st.number_input("年", value=default_year, min_value=2020, max_value=2030)
+        self.month = st.selectbox("月", range(1, 13), index=default_month-1)
         self.n_days = calendar.monthrange(self.year, self.month)[1]
         
         # 前月情報表示
@@ -2177,7 +2301,15 @@ class CompleteGUI:
     
     def _create_calendar_input(self):
         """カレンダー入力（完全修正版）"""
-        st.header("📅 希望入力")
+        # 年月が設定されているかチェック
+        if not hasattr(self, 'year') or not hasattr(self, 'month'):
+            st.warning("⚠️ 年月を設定してください")
+            return
+            
+        st.header(f"📅 希望入力 ({self.year}年{self.month}月)")
+        
+        # 年月情報を明確に表示
+        st.info(f"🗓️ 対象年月: {self.year}年{self.month}月 ({calendar.monthrange(self.year, self.month)[1]}日間)")
         
         if not self.employees:
             st.warning("先に従業員を設定してください")
@@ -2271,6 +2403,9 @@ class CompleteGUI:
                     if new_selected_days:
                         updated_days = [d.day for d in new_selected_days]
                         st.success(f"✅ 選択更新: {sorted(updated_days)}日")
+                        # デバッグ情報
+                        st.info(f"🔍 更新されたデータ: {[d.isoformat() for d in new_selected_days]}")
+                        st.info(f"🔍 現在の年月: {self.year}年{self.month}月")
             
             with tab2:
                 # 勤務場所選択
@@ -2307,6 +2442,107 @@ class CompleteGUI:
                     if st.button("🗑️ すべての勤務希望をクリア", key=f"clear_duty_prefs_{selected_emp}"):
                         st.session_state.calendar_data[selected_emp]['duty_preferences'] = {}
                         st.rerun()
+        
+        # 希望データ保存セクション（統一設定使用）
+        st.subheader("💾 希望データ保存")
+        
+        # 現在の設定名を表示
+        current_config_name = self.unified_config.get_config_name()
+        st.info(f"💾 現在の設定: {current_config_name}")
+        
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            if st.button("💾 現在の設定に希望を保存", type="primary"):
+                if st.session_state.calendar_data:
+                    # 現在の年月を明示的に取得（デバッグ用表示付き）
+                    current_year = getattr(self, 'year', 2025)
+                    current_month = getattr(self, 'month', 6)
+                    
+                    # デバッグ情報表示
+                    st.info(f"🔍 保存時の年月: {current_year}年{current_month}月")
+                    
+                    # セッション状態の内容をデバッグ表示
+                    st.info(f"🔍 保存対象データ: {st.session_state.calendar_data}")
+                    
+                    # シリアライズされたデータもデバッグ表示
+                    serialized_data = self._serialize_calendar_data(st.session_state.calendar_data)
+                    st.info(f"🔍 シリアライズ後: {serialized_data}")
+                    
+                    # 希望データに年月情報を追加して保存
+                    calendar_with_date = {
+                        "year": current_year,
+                        "month": current_month,
+                        "calendar_data": serialized_data
+                    }
+                    
+                    # 既存の統一設定データをデバッグ表示
+                    existing_data = self.unified_config.config.get("calendar_data", {})
+                    st.info(f"🔍 保存前の既存データ: {existing_data}")
+                    
+                    # 専用メソッドで保存（より安全）
+                    if self.unified_config.save_calendar_data(calendar_with_date):
+                        st.success(f"✅ 希望データを保存しました ({current_year}年{current_month}月)")
+                        # 重要：保存後の再読み込みで確認
+                        self._verify_saved_data()
+                    else:
+                        st.error("❌ 保存に失敗しました")
+                else:
+                    st.warning("⚠️ 保存する希望データがありません")
+        
+        with col2:
+            if st.button("📂 設定から希望を読込"):
+                saved_calendar = self.unified_config.config.get("calendar_data", {})
+                if saved_calendar:
+                    # 新形式（年月情報付き）の場合
+                    if "year" in saved_calendar and "month" in saved_calendar:
+                        saved_year = saved_calendar["year"]
+                        saved_month = saved_calendar["month"]
+                        saved_data = saved_calendar["calendar_data"]
+                        
+                        # 年月が一致するかチェック
+                        if saved_year == self.year and saved_month == self.month:
+                            restored_data = self._deserialize_calendar_data(saved_data)
+                            # セッション状態を明示的に更新
+                            st.session_state.calendar_data = restored_data.copy()
+                            st.success(f"✅ {current_config_name} から希望データを読み込みました ({saved_year}年{saved_month}月)")
+                            st.rerun()
+                        else:
+                            st.warning(f"⚠️ 保存された希望データは {saved_year}年{saved_month}月 のものです。現在は {self.year}年{self.month}月 です。")
+                            if st.button("強制読み込み", key="force_load"):
+                                restored_data = self._deserialize_calendar_data(saved_data)
+                                st.session_state.calendar_data = restored_data.copy()
+                                st.success(f"✅ 強制読み込み完了 ({saved_year}年{saved_month}月 → {self.year}年{self.month}月)")
+                                st.rerun()
+                    else:
+                        # 旧形式（年月情報なし）の場合
+                        restored_data = self._deserialize_calendar_data(saved_calendar)
+                        st.session_state.calendar_data.update(restored_data)
+                        st.warning(f"⚠️ 旧形式の希望データを読み込みました（年月情報なし）")
+                        st.rerun()
+                else:
+                    st.warning("⚠️ 現在の設定に希望データが含まれていません")
+    
+    def _serialize_calendar_data(self, calendar_data):
+        """希望データを保存可能な形式に変換"""
+        serializable_data = {}
+        for emp_name, emp_data in calendar_data.items():
+            serializable_data[emp_name] = {
+                'holidays': [d.isoformat() if hasattr(d, 'isoformat') else str(d) for d in emp_data.get('holidays', [])],
+                'duty_preferences': emp_data.get('duty_preferences', {})
+            }
+        return serializable_data
+    
+    def _deserialize_calendar_data(self, serialized_data):
+        """保存された希望データを復元"""
+        calendar_data = {}
+        for emp_name, emp_data in serialized_data.items():
+            calendar_data[emp_name] = {
+                'holidays': [datetime.fromisoformat(d).date() if isinstance(d, str) and '-' in d else d 
+                           for d in emp_data.get('holidays', [])],
+                'duty_preferences': emp_data.get('duty_preferences', {})
+            }
+        return calendar_data
     
     def _create_control_panel(self):
         """制御パネル"""

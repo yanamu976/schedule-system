@@ -1,0 +1,74 @@
+{
+  "version": "2.0",
+  "config_name": "金沢0626",
+  "created_date": "2025-06-23 06:03:25",
+  "last_updated": "2025-06-28 14:26:06",
+  "work_locations": [
+    {
+      "name": "駅A",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FF6B6B"
+    },
+    {
+      "name": "指令",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FF8E8E"
+    },
+    {
+      "name": "警乗",
+      "type": "一徹勤務",
+      "duration": 16,
+      "color": "#FFB6B6"
+    }
+  ],
+  "holiday_type": {
+    "name": "休暇",
+    "color": "#FFEAA7"
+  },
+  "employees": [
+    "Aさん",
+    "Bさん",
+    "Cさん",
+    "Dさん",
+    "Eさん",
+    "Fさん",
+    "Gさん",
+    "助勤"
+  ],
+  "employee_priorities": {
+    "Aさん": {
+      "駅A": 3,
+      "指令": 2,
+      "警乗": 0
+    },
+    "Bさん": {
+      "駅A": 3,
+      "指令": 3,
+      "警乗": 3
+    },
+    "Cさん": {
+      "駅A": 0,
+      "指令": 0,
+      "警乗": 3
+    }
+  },
+  "priority_weights": {
+    "0": 1000,
+    "1": 10,
+    "2": 5,
+    "3": 0
+  },
+  "keijo_base_date": "2025-06-01",
+  "constraint_weights": {
+    "RELIEF": 10,
+    "HOLIDAY": 50,
+    "NITETU": 15,
+    "N2_GAP": 30,
+    "PREF": 5,
+    "CROSS_MONTH": 20,
+    "PRIORITY": 25
+  },
+  "saved_as_profile": "2025-06-26 08:25:33"
+}

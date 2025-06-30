@@ -79,10 +79,29 @@ class ConfigurationManager:
             print(f"設定読み込みエラー: {e}")
             return False
     
-    def get_saved_calendar_data(self):
-        """保存された希望データを取得"""
+    def get_saved_calendar_data(self, year=None, month=None):
+        """保存された希望データを取得（年月別ファイル方式対応）"""
+        # 年月が指定されている場合は、年月別ファイルから読み込み
+        if year is not None and month is not None:
+            return self.load_calendar_data(year, month)
+        
+        # 従来の統一設定ファイルからの読み込み（後方互換性）
         calendar_data = self.current_config.get("calendar_data", {})
-        # 日付文字列をdateオブジェクトに変換
+        
+        # 新形式（年月情報付き）の場合
+        if "year" in calendar_data and "month" in calendar_data and "calendar_data" in calendar_data:
+            saved_data = calendar_data["calendar_data"]
+            # 日付文字列をdateオブジェクトに変換
+            converted_data = {}
+            for emp_name, emp_data in saved_data.items():
+                converted_data[emp_name] = {
+                    'holidays': [datetime.fromisoformat(d).date() if isinstance(d, str) and '-' in d else d 
+                               for d in emp_data.get('holidays', [])],
+                    'duty_preferences': emp_data.get('duty_preferences', {})
+                }
+            return converted_data
+        
+        # 旧形式の場合（日付文字列をdateオブジェクトに変換）
         converted_data = {}
         for emp_name, emp_data in calendar_data.items():
             converted_data[emp_name] = {
@@ -232,7 +251,7 @@ class UnifiedConfigurationManager:
         """設定を保存（修正版）"""
         # 引数が渡されない場合は現在の設定を使用（後方互換性）
         if config_data is None:
-            config_data = self.config.copy()  # 重要：copyで副作用を防ぐ
+            config_data = json.loads(json.dumps(self.config))  # 深いコピーで参照問題を完全回避
         
         # バックアップを作成
         if os.path.exists(self.config_file):
@@ -306,13 +325,65 @@ class UnifiedConfigurationManager:
             return False
     
     def save_calendar_data(self, calendar_data_with_date):
-        """希望データ専用の保存メソッド（新規追加）"""
-        # 現在の設定を安全にコピー
-        new_config = self.config.copy()
-        # 希望データ部分のみ更新
-        new_config["calendar_data"] = calendar_data_with_date
-        # 明示的に保存
-        return self.save_config(new_config)
+        """希望データ専用の保存メソッド（Opus年月別ファイル方式）"""
+        try:
+            # 年月情報を取得
+            year = calendar_data_with_date.get("year", 2025)
+            month = calendar_data_with_date.get("month", 6)
+            calendar_data = calendar_data_with_date.get("calendar_data", {})
+            
+            # calendar_dataディレクトリ作成
+            os.makedirs('calendar_data', exist_ok=True)
+            
+            # 年月別ファイル名
+            filename = f'calendar_data/calendar_{year}_{month:02d}.json'
+            
+            # dateオブジェクトを文字列に変換
+            save_data = {}
+            for emp, data in calendar_data.items():
+                save_data[emp] = {
+                    'holidays': [d.isoformat() if hasattr(d, 'isoformat') else str(d) 
+                               for d in data.get('holidays', [])],
+                    'duty_preferences': data.get('duty_preferences', {})
+                }
+            
+            # 年月別ファイルに保存
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, ensure_ascii=False, indent=2)
+            
+            print(f"✅ カレンダーデータ保存: {filename}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ カレンダーデータ保存エラー: {e}")
+            return False
+    
+    def load_calendar_data(self, year, month):
+        """希望データ読み込み（Opus年月別ファイル方式）"""
+        filename = f'calendar_data/calendar_{year}_{month:02d}.json'
+        
+        if not os.path.exists(filename):
+            print(f"📁 カレンダーファイルなし: {filename}")
+            return {}
+        
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # 文字列をdateオブジェクトに変換
+            result = {}
+            for emp, emp_data in data.items():
+                result[emp] = {
+                    'holidays': [datetime.fromisoformat(d).date() for d in emp_data.get('holidays', [])],
+                    'duty_preferences': emp_data.get('duty_preferences', {})
+                }
+            
+            print(f"✅ カレンダーデータ読み込み: {filename}")
+            return result
+            
+        except Exception as e:
+            print(f"❌ カレンダーデータ読み込みエラー: {e}")
+            return {}
     
     def get_profile_list(self):
         """利用可能なプロファイルのリスト"""
@@ -1660,21 +1731,6 @@ class CompleteGUI:
             # エラーが発生しても処理を続行
             pass
     
-    def _verify_saved_data(self):
-        """保存後のデータ検証（デバッグ用）"""
-        # ファイルから直接読み込んで確認
-        try:
-            with open("configs/unified_settings.json", 'r', encoding='utf-8') as f:
-                saved_config = json.load(f)
-                if "calendar_data" in saved_config:
-                    calendar_data = saved_config["calendar_data"]
-                    if "calendar_data" in calendar_data:
-                        st.info(f"✅ ファイル確認: {calendar_data['calendar_data']}")
-                    else:
-                        st.error("❌ ファイルに希望データが見つかりません")
-        except Exception as e:
-            st.error(f"❌ ファイル読み込みエラー: {e}")
-    
     def _extract_calendar_data_from_config(self):
         """現在の統一設定から希望データを抽出"""
         try:
@@ -2403,9 +2459,6 @@ class CompleteGUI:
                     if new_selected_days:
                         updated_days = [d.day for d in new_selected_days]
                         st.success(f"✅ 選択更新: {sorted(updated_days)}日")
-                        # デバッグ情報
-                        st.info(f"🔍 更新されたデータ: {[d.isoformat() for d in new_selected_days]}")
-                        st.info(f"🔍 現在の年月: {self.year}年{self.month}月")
             
             with tab2:
                 # 勤務場所選択
@@ -2459,15 +2512,8 @@ class CompleteGUI:
                     current_year = getattr(self, 'year', 2025)
                     current_month = getattr(self, 'month', 6)
                     
-                    # デバッグ情報表示
-                    st.info(f"🔍 保存時の年月: {current_year}年{current_month}月")
-                    
-                    # セッション状態の内容をデバッグ表示
-                    st.info(f"🔍 保存対象データ: {st.session_state.calendar_data}")
-                    
-                    # シリアライズされたデータもデバッグ表示
+                    # シリアライズされたデータを取得
                     serialized_data = self._serialize_calendar_data(st.session_state.calendar_data)
-                    st.info(f"🔍 シリアライズ後: {serialized_data}")
                     
                     # 希望データに年月情報を追加して保存
                     calendar_with_date = {
@@ -2476,22 +2522,29 @@ class CompleteGUI:
                         "calendar_data": serialized_data
                     }
                     
-                    # 既存の統一設定データをデバッグ表示
-                    existing_data = self.unified_config.config.get("calendar_data", {})
-                    st.info(f"🔍 保存前の既存データ: {existing_data}")
                     
                     # 専用メソッドで保存（より安全）
                     if self.unified_config.save_calendar_data(calendar_with_date):
                         st.success(f"✅ 希望データを保存しました ({current_year}年{current_month}月)")
-                        # 重要：保存後の再読み込みで確認
-                        self._verify_saved_data()
                     else:
                         st.error("❌ 保存に失敗しました")
                 else:
                     st.warning("⚠️ 保存する希望データがありません")
         
         with col2:
-            if st.button("📂 設定から希望を読込"):
+            if st.button("📂 年月別ファイルから読込"):
+                # 年月別ファイルから直接読み込み（Opus方式）
+                loaded_data = self.unified_config.load_calendar_data(self.year, self.month)
+                if loaded_data:
+                    # セッション状態を明示的に更新
+                    st.session_state.calendar_data = loaded_data.copy()
+                    st.success(f"✅ {self.year}年{self.month}月の希望データを読み込みました")
+                    st.rerun()
+                else:
+                    st.info(f"💡 {self.year}年{self.month}月の希望データはまだありません")
+                    
+            # 従来の設定ファイルからの読み込みも残す（後方互換性）
+            if st.button("📂 設定ファイルから読込", help="従来の統一設定ファイルから読み込み"):
                 saved_calendar = self.unified_config.config.get("calendar_data", {})
                 if saved_calendar:
                     # 新形式（年月情報付き）の場合
@@ -2505,15 +2558,10 @@ class CompleteGUI:
                             restored_data = self._deserialize_calendar_data(saved_data)
                             # セッション状態を明示的に更新
                             st.session_state.calendar_data = restored_data.copy()
-                            st.success(f"✅ {current_config_name} から希望データを読み込みました ({saved_year}年{saved_month}月)")
+                            st.success(f"✅ 設定ファイルから希望データを読み込みました ({saved_year}年{saved_month}月)")
                             st.rerun()
                         else:
                             st.warning(f"⚠️ 保存された希望データは {saved_year}年{saved_month}月 のものです。現在は {self.year}年{self.month}月 です。")
-                            if st.button("強制読み込み", key="force_load"):
-                                restored_data = self._deserialize_calendar_data(saved_data)
-                                st.session_state.calendar_data = restored_data.copy()
-                                st.success(f"✅ 強制読み込み完了 ({saved_year}年{saved_month}月 → {self.year}年{self.month}月)")
-                                st.rerun()
                     else:
                         # 旧形式（年月情報なし）の場合
                         restored_data = self._deserialize_calendar_data(saved_calendar)
@@ -2521,7 +2569,62 @@ class CompleteGUI:
                         st.warning(f"⚠️ 旧形式の希望データを読み込みました（年月情報なし）")
                         st.rerun()
                 else:
-                    st.warning("⚠️ 現在の設定に希望データが含まれていません")
+                    st.warning("⚠️ 設定ファイルに希望データが含まれていません")
+        
+        # 保存済みカレンダーファイル一覧表示
+        with st.expander("📁 保存済みカレンダーファイル", expanded=False):
+            calendar_dir = 'calendar_data'
+            if os.path.exists(calendar_dir):
+                files = [f for f in os.listdir(calendar_dir) if f.endswith('.json')]
+                if files:
+                    st.write("**利用可能なカレンダーファイル:**")
+                    for file in sorted(files, reverse=True):  # 新しい順
+                        filepath = os.path.join(calendar_dir, file)
+                        try:
+                            # ファイル情報を表示
+                            import time
+                            mtime = os.path.getmtime(filepath)
+                            modified_date = time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime))
+                            
+                            # ファイル内容の簡易プレビュー
+                            with open(filepath, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+                            employee_count = len(data)
+                            
+                            col1, col2, col3 = st.columns([2, 1, 1])
+                            with col1:
+                                st.write(f"📅 **{file}**")
+                                st.caption(f"従業員数: {employee_count}名, 更新: {modified_date}")
+                            
+                            with col2:
+                                # ファイル名から年月を抽出
+                                import re
+                                match = re.search(r'calendar_(\d{4})_(\d{2})\.json', file)
+                                if match:
+                                    file_year, file_month = int(match.group(1)), int(match.group(2))
+                                    if st.button(f"読込", key=f"load_{file}"):
+                                        loaded_data = self.unified_config.load_calendar_data(file_year, file_month)
+                                        if loaded_data:
+                                            st.session_state.calendar_data = loaded_data.copy()
+                                            st.success(f"✅ {file_year}年{file_month}月の希望データを読み込みました")
+                                            st.rerun()
+                            
+                            with col3:
+                                if st.button(f"削除", key=f"delete_{file}", help="このファイルを削除"):
+                                    try:
+                                        os.remove(filepath)
+                                        st.success(f"✅ {file} を削除しました")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ 削除失敗: {e}")
+                            
+                            st.divider()
+                        except Exception as e:
+                            st.error(f"❌ {file} の読み込みエラー: {e}")
+                else:
+                    st.info("📁 保存済みカレンダーファイルはありません")
+            else:
+                st.info("📁 calendar_dataフォルダがありません")
     
     def _serialize_calendar_data(self, calendar_data):
         """希望データを保存可能な形式に変換"""

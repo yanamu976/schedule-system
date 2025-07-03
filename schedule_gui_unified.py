@@ -15,6 +15,7 @@ import re
 import calendar
 import json
 import tempfile
+import copy
 from datetime import datetime, date
 from collections import defaultdict
 from ortools.sat.python import cp_model
@@ -272,7 +273,7 @@ class UnifiedConfigurationManager:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, ensure_ascii=False, indent=2)
             # 保存成功後、インスタンスの状態も更新
-            self.config = config_data.copy()  # copyで参照の問題を防ぐ
+            self.config = copy.deepcopy(config_data)  # 深いコピーで参照の問題を防ぐ
             return True
         except Exception as e:
             print(f"保存エラー: {e}")
@@ -289,7 +290,7 @@ class UnifiedConfigurationManager:
         filename = f"{profile_name}_{datetime.now().strftime('%Y%m%d')}.json"
         filepath = os.path.join(profiles_dir, filename)
         
-        profile_data = self.config.copy()
+        profile_data = copy.deepcopy(self.config)
         profile_data["config_name"] = profile_name
         profile_data["saved_as_profile"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -315,10 +316,13 @@ class UnifiedConfigurationManager:
             else:
                 print(f"[DEBUG] このプロファイルには希望データがありません")
             
-            # プロファイルのデータをそのまま設定（希望データも含む）
-            self.config = profile_data
+            # プロファイルのデータを深いコピーで設定（希望データも含む）
+            self.config = copy.deepcopy(profile_data)
             
-            # save_config()は呼ばない
+            # デバッグ: 読み込み直後の設定名を確認
+            print(f"[DEBUG] プロファイル読み込み直後の設定名: {self.config.get('config_name', '名称未設定')}")
+            
+            # save_config()は呼ばない（プロファイル読み込み時はメイン設定を更新しない）
             return True
         except Exception as e:
             print(f"プロファイル読み込みエラー: {e}")
@@ -456,7 +460,9 @@ class UnifiedConfigurationManager:
             return date(2025, 6, 1)
     
     def get_config_name(self):
-        return self.config.get("config_name", "名称未設定")
+        config_name = self.config.get("config_name", "名称未設定")
+        print(f"[DEBUG] get_config_name() called, returning: {config_name}")
+        return config_name
     
     # データ更新メソッド
     def update_employees(self, employees):
@@ -464,19 +470,19 @@ class UnifiedConfigurationManager:
         self.config["employees"] = employees
         # 優先度設定の整合性を保つ
         self._sync_employee_priorities()
-        return self.save_config()
+        return True  # 自動保存を削除
     
     def update_work_locations(self, locations):
         """勤務場所を更新"""
         self.config["work_locations"] = locations
         # 優先度設定の整合性を保つ
         self._sync_location_priorities()
-        return self.save_config()
+        return True  # 自動保存を削除
     
     def update_priorities(self, priorities):
         """優先度設定を更新"""
         self.config["employee_priorities"] = priorities
-        return self.save_config()
+        return True  # 自動保存を削除
     
     def _sync_employee_priorities(self):
         """従業員変更時の優先度設定の整合性を保つ"""
@@ -1693,7 +1699,7 @@ class CompleteGUI:
         
         # 既存のConfigurationManagerも互換性のために残すが、統一設定を参照
         self.config_manager = ConfigurationManager()
-        self.config_manager.current_config = self.unified_config.config
+        self.config_manager.current_config = copy.deepcopy(self.unified_config.config)
         
         # エンジンとエクスポーターは変更なし
         self.engine = CompleteScheduleEngine(self.location_manager, self.config_manager)
@@ -1702,6 +1708,10 @@ class CompleteGUI:
         # セッション状態の初期化（既存のまま）
         if 'calendar_data' not in st.session_state:
             st.session_state.calendar_data = {}
+        
+        # 設定変更フラグの初期化
+        if 'settings_changed' not in st.session_state:
+            st.session_state.settings_changed = False
         if 'show_config' not in st.session_state:
             st.session_state.show_config = False
         if 'selected_config' not in st.session_state:
@@ -1965,8 +1975,8 @@ class CompleteGUI:
         # 優先度選択肢
         priority_options = ["0 (不可)", "1 (可能)", "2 (普通)", "3 (最優先)"]
         
-        # 新しい優先度設定を格納
-        new_priorities = {}
+        # 新しい優先度設定を格納（既存データを深いコピーで保持）
+        new_priorities = copy.deepcopy(current_priorities)
         
         # 動的な従業員設定（助勤も含む）
         # セッション状態から従業員リストを取得
@@ -1981,20 +1991,11 @@ class CompleteGUI:
         
         st.info(f"📊 設定対象従業員: {len(target_employees)}名（助勤含む）")
         
+        # 全従業員を1ページで表示（ページ分割無効化）
+        display_employees = target_employees
+        
         if len(target_employees) > 20:
-            st.warning("⚠️ 従業員数が多いため、ページ分割表示を推奨します")
-            
-            # ページ分割機能
-            page_size = 10
-            total_pages = (len(target_employees) + page_size - 1) // page_size
-            current_page = st.selectbox("表示ページ", range(1, total_pages + 1), key="priority_page") - 1
-            start_idx = current_page * page_size
-            end_idx = min(start_idx + page_size, len(target_employees))
-            display_employees = target_employees[start_idx:end_idx]
-            
-            st.info(f"📄 ページ {current_page + 1}/{total_pages} - 従業員 {start_idx + 1}～{end_idx}名を表示")
-        else:
-            display_employees = target_employees
+            st.warning("⚠️ 従業員数が多いですが、設定の整合性のため全員を1ページで表示します")
         
         for emp_name in display_employees:
             st.subheader(f"👤 {emp_name}の優先度設定")
@@ -2084,6 +2085,10 @@ class CompleteGUI:
         """サイドバー（統一保存UI付き）"""
         st.header("📋 基本設定")
         
+        # 未保存変更の警告表示
+        if st.session_state.get('settings_changed', False):
+            st.warning("⚠️ 未保存の変更があります。下記から設定を保存してください。")
+        
         # === 統一保存UI（新規追加）===
         with st.expander("💾 設定の保存・読み込み", expanded=True):
             # 現在の設定名を表示
@@ -2096,7 +2101,8 @@ class CompleteGUI:
             with col1:
                 if st.button("📝 上書き保存", use_container_width=True):
                     if self.unified_config.save_config():
-                        st.success("✅ 保存しました")
+                        st.success("✅ 設定を保存しました")
+                        st.session_state.settings_changed = False  # フラグをリセット
                         st.balloons()
                     else:
                         st.error("保存に失敗しました")
@@ -2108,6 +2114,7 @@ class CompleteGUI:
                         filename = self.unified_config.save_as_profile(save_name)
                         if filename:
                             st.success(f"✅ {filename} として保存しました")
+                            st.session_state.settings_changed = False  # フラグをリセット
                         else:
                             st.error("保存に失敗しました")
                     else:
@@ -2128,12 +2135,21 @@ class CompleteGUI:
                         current_year = getattr(self, 'year', 2025)
                         current_month = getattr(self, 'month', 6)
                         
-                        st.success("✅ 設定を読み込みました")
-                        # セッション状態をクリア
-                        st.session_state.clear()
+                        # 重要: config_managerとlocation_managerを統一設定と同期
+                        self.config_manager.current_config = copy.deepcopy(self.unified_config.config)
+                        self.location_manager.duty_locations = self.unified_config.get_work_locations()
+                        self.location_manager.holiday_type = self.unified_config.get_holiday_type()
+                        
+                        # デバッグ: 設定名更新を確認
+                        print(f"[DEBUG] プロファイル読み込み後の設定名: {self.unified_config.get_config_name()}")
                         
                         # プロファイルから希望データを取得（新しいプロファイルのデータ）
                         profile_calendar_data = self.unified_config.config.get("calendar_data", {})
+                        
+                        # セッション状態をクリア
+                        st.session_state.clear()
+                        
+                        # 希望データと年月設定を復元
                         if profile_calendar_data:
                             # 新形式（年月情報付き）の場合
                             if "calendar_data" in profile_calendar_data:
@@ -2148,6 +2164,10 @@ class CompleteGUI:
                         # 年月設定を復元
                         st.session_state.preserved_year = current_year
                         st.session_state.preserved_month = current_month
+                        
+                        st.success("✅ 設定を読み込みました")
+                        # 強制リフレッシュを促す
+                        st.info("画面を更新しています...")
                         st.rerun()
                     else:
                         st.error("読み込みに失敗しました")
@@ -2506,7 +2526,7 @@ class CompleteGUI:
         col1, col2 = st.columns([1, 1])
         
         with col1:
-            if st.button("💾 現在の設定に希望を保存", type="primary"):
+            if st.button("💾 この年月の希望をファイルに保存", type="primary", help="カレンダーで入力した希望休や勤務希望を、年月別のファイルとして保存します"):
                 if st.session_state.calendar_data:
                     # 現在の年月を明示的に取得（デバッグ用表示付き）
                     current_year = getattr(self, 'year', 2025)
@@ -2525,7 +2545,7 @@ class CompleteGUI:
                     
                     # 専用メソッドで保存（より安全）
                     if self.unified_config.save_calendar_data(calendar_with_date):
-                        st.success(f"✅ 希望データを保存しました ({current_year}年{current_month}月)")
+                        st.success(f"✅ {current_year}年{current_month}月の希望データを年月別ファイルに保存しました")
                     else:
                         st.error("❌ 保存に失敗しました")
                 else:

@@ -1,8 +1,8 @@
 {
   "version": "2.0",
-  "config_name": "金沢0626",
+  "config_name": "百番街",
   "created_date": "2025-06-23 06:03:25",
-  "last_updated": "2025-06-28 12:02:06",
+  "last_updated": "2025-07-04 12:10:04",
   "work_locations": [
     {
       "name": "駅A",
@@ -28,30 +28,25 @@
     "color": "#FFEAA7"
   },
   "employees": [
-    "Aさん",
-    "Bさん",
-    "Cさん",
-    "Dさん",
-    "Eさん",
-    "Fさん",
-    "Gさん",
-    "助勤"
+    "中谷",
+    "宮崎",
+    "木村"
   ],
   "employee_priorities": {
-    "Aさん": {
-      "駅A": 3,
-      "指令": 2,
+    "中谷": {
+      "駅A": 1,
+      "指令": 3,
       "警乗": 0
     },
-    "Bさん": {
-      "駅A": 3,
-      "指令": 3,
-      "警乗": 3
-    },
-    "Cさん": {
+    "宮崎": {
       "駅A": 0,
       "指令": 0,
       "警乗": 3
+    },
+    "木村": {
+      "駅A": 0,
+      "指令": 3,
+      "警乗": 0
     }
   },
   "priority_weights": {
@@ -70,5 +65,18 @@
     "CROSS_MONTH": 20,
     "PRIORITY": 25
   },
-  "saved_as_profile": "2025-06-26 08:25:33"
+  "saved_as_profile": "2025-07-03 17:16:00",
+  "calendar_data": {
+    "year": 2025,
+    "month": 6,
+    "calendar_data": {
+      "中谷": {
+        "holidays": [
+          "2025-06-10",
+          "2025-06-11"
+        ],
+        "duty_preferences": {}
+      }
+    }
+  }
 }

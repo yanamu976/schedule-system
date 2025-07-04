@@ -517,19 +517,31 @@ class UnifiedConfigurationManager:
         self.config["employees"] = employees
         # 優先度設定の整合性を保つ
         self._sync_employee_priorities()
-        return True  # 自動保存を削除
+        # プロファイルモード中は現在のプロファイルのみに保存
+        if self.profile_mode:
+            return self.save_profile_changes()
+        else:
+            return self.save_config()
     
     def update_work_locations(self, locations):
         """勤務場所を更新"""
         self.config["work_locations"] = locations
         # 優先度設定の整合性を保つ
         self._sync_location_priorities()
-        return True  # 自動保存を削除
+        # プロファイルモード中は現在のプロファイルのみに保存
+        if self.profile_mode:
+            return self.save_profile_changes()
+        else:
+            return self.save_config()
     
     def update_priorities(self, priorities):
         """優先度設定を更新"""
         self.config["employee_priorities"] = priorities
-        return True  # 自動保存を削除
+        # プロファイルモード中は現在のプロファイルのみに保存
+        if self.profile_mode:
+            return self.save_profile_changes()
+        else:
+            return self.save_config()
     
     def _sync_employee_priorities(self):
         """従業員変更時の優先度設定の整合性を保つ"""
@@ -720,7 +732,8 @@ class CompleteScheduleEngine:
             'N2_GAP': 30,      # 二徹格差ペナルティ
             'PREF': 5,         # 希望違反ペナルティ
             'CROSS_MONTH': 20, # 月またぎ二徹ペナルティ
-            'PRIORITY': 25     # 優先度違反ペナルティ（Phase 1新機能）
+            'PRIORITY': 25,    # 優先度違反ペナルティ（Phase 1新機能）
+            'DUTY_LOAD_GAP': 40  # 勤務負担格差ペナルティ（新機能）
         }
         
         # 優先度重み（Phase 1）
@@ -833,11 +846,18 @@ class CompleteScheduleEngine:
         self.id_to_name = {i: name for i, name in enumerate(employee_names)}
         self.shift_name_to_id = {name: i for i, name in enumerate(self.shift_names)}
         
+        # 泊まり勤務の判定（一徹勤務、夜勤のみ。日勤は除外）
+        self.overnight_shift_ids = []
+        for i, loc in enumerate(duty_locations):
+            if loc["type"] in ["一徹勤務", "夜勤"]:
+                self.overnight_shift_ids.append(i)
+        
         print(f"🔧 システム設定:")
         print(f"  従業員: {self.n_employees}名")
         print(f"  勤務場所: {self.n_duties}箇所 - {self.duty_names}")
         print(f"  総シフト: {self.n_shifts}種類")
         print(f"  非番ID: {self.OFF_SHIFT_ID}")
+        print(f"  泊まり勤務ID: {self.overnight_shift_ids} (非番制約対象)")
     
     def parse_requirements(self, requirement_lines, n_days, employee_priorities=None):
         """要求文の解析（Phase 1: 優先度対応）"""
@@ -1007,17 +1027,17 @@ class CompleteScheduleEngine:
                     # 警乗以外または警乗隔日制約なしの場合は通常通り1人
                     model.Add(sum(w[e, d, s] for e in range(self.n_employees)) == 1)
         
-        # 基本制約3: 勤務後は翌日非番
+        # 基本制約3: 泊まり勤務後は翌日非番（日勤は除外）
         for e in range(self.n_employees):
             for d in range(n_days - 1):
-                for s in range(self.n_duties):  # 各勤務場所について
+                for s in self.overnight_shift_ids:  # 泊まり勤務のみ
                     model.AddImplication(w[e, d, s], w[e, d + 1, self.OFF_SHIFT_ID])
         
-        # 基本制約4: 非番の前日は勤務
+        # 基本制約4: 非番の前日は泊まり勤務
         for e in range(self.n_employees):
             for d in range(1, n_days):
-                duty_prev_day = sum(w[e, d - 1, s] for s in range(self.n_duties))
-                model.Add(duty_prev_day >= w[e, d, self.OFF_SHIFT_ID])
+                overnight_prev_day = sum(w[e, d - 1, s] for s in self.overnight_shift_ids)
+                model.Add(overnight_prev_day >= w[e, d, self.OFF_SHIFT_ID])
         
         # 基本制約5: 連続非番禁止
         for e in range(self.n_employees):
@@ -1130,6 +1150,23 @@ class CompleteScheduleEngine:
             model.AddMinEquality(nitetu_min, nitetu_counts)
             nitetu_gap = nitetu_max - nitetu_min
         
+        # 🆕 勤務負担均等化制約（各従業員の総勤務日数）
+        total_duty_counts = []
+        for e in range(self.n_employees):
+            total_duty_var = model.NewIntVar(0, n_days, f"total_duty_{e}")
+            total_duty = sum(duty_flags[e, d] for d in range(n_days))
+            model.Add(total_duty_var == total_duty)
+            total_duty_counts.append(total_duty_var)
+        
+        # 勤務負担格差の計算
+        duty_load_gap = 0
+        if relax_level <= 1:  # 制約緩和レベル1まで適用
+            duty_max = model.NewIntVar(0, n_days, "duty_max")
+            duty_min = model.NewIntVar(0, n_days, "duty_min")
+            model.AddMaxEquality(duty_max, total_duty_counts)
+            model.AddMinEquality(duty_min, total_duty_counts)
+            duty_load_gap = duty_max - duty_min
+        
         # 助勤制約
         relief_work_vars = [w[self.relief_employee_id, d, s] 
                            for d in range(n_days) for s in range(self.n_duties)]
@@ -1167,6 +1204,10 @@ class CompleteScheduleEngine:
         
         if nitetu_gap != 0:
             objective_terms.append(self.weights['N2_GAP'] * nitetu_gap)
+        
+        # 🆕 勤務負担格差ペナルティを追加
+        if duty_load_gap != 0:
+            objective_terms.append(self.weights['DUTY_LOAD_GAP'] * duty_load_gap)
         
         # 警乗隔日ペナルティを追加
         objective_terms.extend(keijo_penalty_terms)
@@ -1618,20 +1659,30 @@ class ExcelExporter:
         
         # ヘッダー
         headers = ["従業員名"] + [f"{name}回数" for name in duty_names] + [
-            "勤務数", "二徹回数", "有休希望", "有休実現", "有休実現率%", "シフト希望", "シフト実現", "解の品質"]
+            "勤務数", "総労働時間", "二徹回数", "有休希望", "有休実現", "有休実現率%", "シフト希望", "シフト実現", "解の品質"]
         
         for col, header in enumerate(headers):
             worksheet.write(0, col, header, formats['header'])
+        
+        # 勤務場所の労働時間情報を取得
+        work_locations = unified_config.get_work_locations()
+        duty_durations = [loc["duration"] for loc in work_locations]
         
         # 各従業員の統計
         for emp_id, emp_name in enumerate(employees):
             # 各勤務場所回数
             duty_counts = []
             total_duty_count = 0
+            total_work_hours = 0  # 🆕 総労働時間
+            
             for duty_id in range(len(duty_names)):
                 count = sum(solver.Value(w[emp_id, day, duty_id]) for day in range(n_days))
                 duty_counts.append(count)
                 total_duty_count += count
+                
+                # 🆕 労働時間計算（回数 × その勤務の時間）
+                if duty_id < len(duty_durations):
+                    total_work_hours += count * duty_durations[duty_id]
             
             # 二徹回数
             nitetu_count = solver.Value(nitetu_counts[emp_id]) if emp_id < len(nitetu_counts) else 0
@@ -1654,7 +1705,7 @@ class ExcelExporter:
             
             # データ書き込み
             row_data = [emp_name] + duty_counts + [
-                total_duty_count, nitetu_count, len(emp_holidays), holiday_satisfied, 
+                total_duty_count, f"{total_work_hours}h", nitetu_count, len(emp_holidays), holiday_satisfied, 
                 f"{holiday_rate:.1f}%", len(emp_shift_prefs), shift_satisfied, quality]
             
             for col, value in enumerate(row_data):

@@ -19,6 +19,103 @@ import copy
 from datetime import datetime, date
 from collections import defaultdict
 from ortools.sat.python import cp_model
+from typing import Dict, List, Optional, Tuple, Any, Union
+
+
+# =================== 定数定義 ===================
+
+class Constants:
+    """システム全体で使用する定数"""
+    
+    # 従業員関連
+    MAX_EMPLOYEES = 50
+    MIN_EMPLOYEES = 2
+    DEFAULT_EMPLOYEES = 8
+    
+    # 勤務関連
+    DEFAULT_SHIFT_DURATION = 16
+    MAX_SHIFT_DURATION = 24
+    MIN_SHIFT_DURATION = 1
+    
+    # 制約関連
+    MAX_CONSECUTIVE_DAYS = 3
+    DOUBLE_SHIFT_LIMIT = 2
+    MAX_PREV_DAYS = 3
+    MAX_PREVIEW_DAYS = 15
+    
+    # ペナルティ重み
+    PRIORITY_WEIGHTS = {
+        "NO_ASSIGNMENT": 1000,
+        "LOW_PRIORITY": 10,
+        "MEDIUM_PRIORITY": 5,
+        "HIGH_PRIORITY": 0
+    }
+    
+    # 制約ペナルティ
+    CONSTRAINT_PENALTIES = {
+        "HARD_CONSTRAINT": 10000,
+        "MEDIUM_CONSTRAINT": 1000,
+        "SOFT_CONSTRAINT": 100,
+        "N2_GAP": 30,
+        "PREF": 5,
+        "CROSS_MONTH": 20,
+        "PRIORITY": 25,
+        "RELIEF": 10,
+        "HOLIDAY": 50,
+        "NITETU": 15
+    }
+    
+    # 時間制限
+    SOLVER_MAX_TIME_SECONDS = 30
+    
+    # 年月範囲
+    MIN_YEAR = 2020
+    MAX_YEAR = 2030
+    
+    # 色設定
+    DEFAULT_COLORS = {
+        "STATION_A": "#FF6B6B",
+        "COMMAND": "#FF8E8E", 
+        "GUARD": "#FFB6B6",
+        "HOLIDAY": "#FFEAA7"
+    }
+    
+    # ファイル・ディレクトリ
+    CONFIGS_DIR = "configs"
+    PROFILES_DIR = "profiles"
+    BACKUPS_DIR = "backups"
+    CALENDAR_DIR = "calendar_data"
+    
+    # JSON設定
+    JSON_INDENT = 2
+    JSON_ENCODING = "utf-8"
+
+
+# =================== 例外処理クラス ===================
+
+class ScheduleSystemError(Exception):
+    """スケジュールシステム共通例外クラス"""
+    pass
+
+class ConfigurationError(ScheduleSystemError):
+    """設定関連エラー"""
+    pass
+
+class ScheduleGenerationError(ScheduleSystemError):
+    """スケジュール生成エラー"""
+    pass
+
+class FileOperationError(ScheduleSystemError):
+    """ファイル操作エラー"""
+    pass
+
+class ValidationError(ScheduleSystemError):
+    """バリデーションエラー"""
+    pass
+
+class ConstraintError(ScheduleSystemError):
+    """制約エラー"""
+    pass
 
 
 # =================== 設定管理システム（Phase 1） ===================
@@ -26,8 +123,8 @@ from ortools.sat.python import cp_model
 class ConfigurationManager:
     """Phase 1: 最小限設定管理クラス"""
     
-    def __init__(self):
-        self.configs_dir = "configs"
+    def __init__(self) -> None:
+        self.configs_dir: str = Constants.CONFIGS_DIR
         self.ensure_configs_dir()
         
         # デフォルト設定
@@ -35,11 +132,11 @@ class ConfigurationManager:
             "config_name": "デフォルト設定",
             "created_date": datetime.now().strftime("%Y-%m-%d"),
             "work_locations": [
-                {"name": "駅A", "type": "一徹勤務", "duration": 16, "color": "#FF6B6B"},
-                {"name": "指令", "type": "一徹勤務", "duration": 16, "color": "#FF8E8E"},
-                {"name": "警乗", "type": "一徹勤務", "duration": 16, "color": "#FFB6B6"}
+                {"name": "駅A", "type": "一徹勤務", "duration": Constants.DEFAULT_SHIFT_DURATION, "color": Constants.DEFAULT_COLORS["STATION_A"]},
+                {"name": "指令", "type": "一徹勤務", "duration": Constants.DEFAULT_SHIFT_DURATION, "color": Constants.DEFAULT_COLORS["COMMAND"]},
+                {"name": "警乗", "type": "一徹勤務", "duration": Constants.DEFAULT_SHIFT_DURATION, "color": Constants.DEFAULT_COLORS["GUARD"]}
             ],
-            "holiday_type": {"name": "休暇", "color": "#FFEAA7"},
+            "holiday_type": {"name": "休暇", "color": Constants.DEFAULT_COLORS["HOLIDAY"]},
             "employees": ["Aさん", "Bさん", "Cさん", "Dさん", "Eさん", "Fさん", "Gさん", "助勤"],
             "employee_priorities": {
                 "Aさん": {"駅A": 3, "指令": 2, "警乗": 0},
@@ -47,38 +144,41 @@ class ConfigurationManager:
                 "Cさん": {"駅A": 0, "指令": 0, "警乗": 3},
                 "助勤": {"駅A": 1, "指令": 1, "警乗": 1}
             },
-            "priority_weights": {"0": 1000, "1": 10, "2": 5, "3": 0}
+            "priority_weights": {"0": Constants.PRIORITY_WEIGHTS["NO_ASSIGNMENT"], "1": Constants.PRIORITY_WEIGHTS["LOW_PRIORITY"], "2": Constants.PRIORITY_WEIGHTS["MEDIUM_PRIORITY"], "3": Constants.PRIORITY_WEIGHTS["HIGH_PRIORITY"]}
         }
         
         # 現在の設定
         self.current_config = self.default_config.copy()
     
-    def ensure_configs_dir(self):
+    def ensure_configs_dir(self) -> None:
         """configs/ディレクトリの確保"""
         if not os.path.exists(self.configs_dir):
             os.makedirs(self.configs_dir)
     
-    def get_config_files(self):
+    def get_config_files(self) -> List[str]:
         """設定ファイル一覧取得"""
         if not os.path.exists(self.configs_dir):
             return []
         files = [f for f in os.listdir(self.configs_dir) if f.endswith('.json')]
         return sorted(files)
     
-    def load_config(self, filename=None):
+    def load_config(self, filename: Optional[str] = None) -> bool:
         """設定読み込み（希望データ対応）"""
         if filename is None:
             return False
         
         filepath = os.path.join(self.configs_dir, filename)
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding=Constants.JSON_ENCODING) as f:
                 config = json.load(f)
                 self.current_config = config
                 return True
+        except FileNotFoundError:
+            raise FileOperationError(f"設定ファイルが見つかりません: {filepath}")
+        except json.JSONDecodeError:
+            raise ConfigurationError(f"設定ファイルの形式が不正です: {filepath}")
         except Exception as e:
-            print(f"設定読み込みエラー: {e}")
-            return False
+            raise FileOperationError(f"設定読み込みエラー: {e}")
     
     def get_saved_calendar_data(self, year=None, month=None):
         """保存された希望データを取得（年月別ファイル方式対応）"""
@@ -139,12 +239,11 @@ class ConfigurationManager:
             config_data["calendar_data"] = serializable_calendar_data
         
         try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, ensure_ascii=False, indent=2)
+            with open(filepath, 'w', encoding=Constants.JSON_ENCODING) as f:
+                json.dump(config_data, f, ensure_ascii=False, indent=Constants.JSON_INDENT)
             return filename
         except Exception as e:
-            print(f"設定保存エラー: {e}")
-            return None
+            raise FileOperationError(f"設定保存エラー: {e}")
     
     def get_work_locations(self):
         """勤務場所一覧取得"""
@@ -317,7 +416,25 @@ class UnifiedConfigurationManager:
     def load_profile(self, profile_path):
         """プロファイルを読み込む（改善版）"""
         try:
+            import traceback
             print(f"[DEBUG] プロファイル読み込み開始: {profile_path}")
+            print(f"[DEBUG] 呼び出し元:")
+            for line in traceback.format_stack()[-3:-1]:
+                print(f"[DEBUG] {line.strip()}")
+            
+            # プロファイルがロックされている場合、別のプロファイルの読み込みを拒否
+            if (st.session_state.get('profile_locked', False) and 
+                st.session_state.get('locked_profile_path') != profile_path):
+                print(f"[DEBUG] プロファイルロック中のため読み込みをスキップ: {profile_path}")
+                print(f"[DEBUG] ロック中のプロファイル: {st.session_state.get('locked_profile_path')}")
+                return False
+            
+            # 既にプロファイルモード中で同じプロファイルを読み込もうとしている場合はスキップ
+            if (self.profile_mode and 
+                self.current_profile_path and 
+                os.path.abspath(profile_path) == os.path.abspath(self.current_profile_path)):
+                print(f"[DEBUG] 同じプロファイルの重複読み込みをスキップ: {profile_path}")
+                return True
             
             # ファイルが存在するか確認
             if not os.path.exists(profile_path):
@@ -339,6 +456,15 @@ class UnifiedConfigurationManager:
             self.profile_mode = True
             self.current_profile_path = profile_path
             
+            # プロファイルをロック
+            st.session_state.profile_locked = True
+            st.session_state.locked_profile_path = profile_path
+            print(f"[DEBUG] プロファイルロック設定: {profile_path}")
+            
+            # プロファイル読み込み後の同期処理はプロファイルモードでは実行しない
+            # （プロファイルデータは既に完全な状態で保存されているため）
+            print(f"[DEBUG] プロファイルモード: 同期処理をスキップ")
+            
             # デバッグ出力
             employees = self.config.get("employees", [])
             config_name = self.config.get("config_name", "名称未設定")
@@ -357,6 +483,12 @@ class UnifiedConfigurationManager:
         """プロファイルモードを解除してメイン設定に戻る"""
         self.profile_mode = False
         self.current_profile_path = None
+        
+        # プロファイルロックを解除
+        st.session_state.profile_locked = False
+        st.session_state.locked_profile_path = None
+        print(f"[DEBUG] プロファイルロック解除")
+        
         # メイン設定を再読み込み
         self.config = self._load_or_create_default()
         print(f"[DEBUG] プロファイルモード解除、メイン設定に復帰")
@@ -508,7 +640,6 @@ class UnifiedConfigurationManager:
     
     def get_config_name(self):
         config_name = self.config.get("config_name", "名称未設定")
-        print(f"[DEBUG] get_config_name() called, returning: {config_name}")
         return config_name
     
     # データ更新メソッド
@@ -517,9 +648,10 @@ class UnifiedConfigurationManager:
         self.config["employees"] = employees
         # 優先度設定の整合性を保つ
         self._sync_employee_priorities()
-        # プロファイルモード中は現在のプロファイルのみに保存
+        # プロファイルモード中は保存しない（メモリ内のみ更新）
         if self.profile_mode:
-            return self.save_profile_changes()
+            print(f"[DEBUG] プロファイルモード中 - 従業員設定をメモリ内で更新のみ")
+            return True  # 保存せずに成功として返す
         else:
             return self.save_config()
     
@@ -528,23 +660,30 @@ class UnifiedConfigurationManager:
         self.config["work_locations"] = locations
         # 優先度設定の整合性を保つ
         self._sync_location_priorities()
-        # プロファイルモード中は現在のプロファイルのみに保存
+        # プロファイルモード中は保存しない（メモリ内のみ更新）
         if self.profile_mode:
-            return self.save_profile_changes()
+            print(f"[DEBUG] プロファイルモード中 - 勤務場所設定をメモリ内で更新のみ")
+            return True  # 保存せずに成功として返す
         else:
             return self.save_config()
     
     def update_priorities(self, priorities):
         """優先度設定を更新"""
         self.config["employee_priorities"] = priorities
-        # プロファイルモード中は現在のプロファイルのみに保存
+        # プロファイルモード中は保存しない（メモリ内のみ更新）
         if self.profile_mode:
-            return self.save_profile_changes()
+            print(f"[DEBUG] プロファイルモード中 - 優先度設定をメモリ内で更新のみ")
+            return True  # 保存せずに成功として返す
         else:
             return self.save_config()
     
     def _sync_employee_priorities(self):
         """従業員変更時の優先度設定の整合性を保つ"""
+        # プロファイルモード時は同期処理をスキップ
+        if self.profile_mode:
+            print(f"[DEBUG] プロファイルモード中: 従業員優先度同期処理をスキップ")
+            return
+        
         current_employees = set(self.config.get("employees", []))
         current_priorities = self.config.get("employee_priorities", {})
         
@@ -567,19 +706,24 @@ class UnifiedConfigurationManager:
     
     def _sync_location_priorities(self):
         """勤務場所変更時の優先度設定の整合性を保つ"""
+        # プロファイルモード時は同期処理をスキップ
+        if self.profile_mode:
+            print(f"[DEBUG] プロファイルモード中: 同期処理をスキップ")
+            return
+        
         current_locations = self.get_duty_names()
         current_priorities = self.config.get("employee_priorities", {})
         
         for emp_name, emp_priorities in current_priorities.items():
+            # 削除された勤務場所の優先度を削除（先に実行）
+            for loc_name in list(emp_priorities.keys()):
+                if loc_name not in current_locations:
+                    del emp_priorities[loc_name]
+            
             # 新しい勤務場所にデフォルト優先度を設定
             for loc_name in current_locations:
                 if loc_name not in emp_priorities:
                     emp_priorities[loc_name] = 2
-            
-            # 削除された勤務場所の優先度を削除
-            for loc_name in list(emp_priorities.keys()):
-                if loc_name not in current_locations:
-                    del emp_priorities[loc_name]
         
         self.config["employee_priorities"] = current_priorities
 
@@ -737,7 +881,13 @@ class CompleteScheduleEngine:
         }
         
         # 優先度重み（Phase 1）
-        self.priority_weights = {0: 1000, 1: 10, 2: 5, 3: 0}  # デフォルト
+        # デフォルト優先度重み（Constantsから取得）
+        self.priority_weights = {
+            0: Constants.PRIORITY_WEIGHTS["NO_ASSIGNMENT"],
+            1: Constants.PRIORITY_WEIGHTS["LOW_PRIORITY"], 
+            2: Constants.PRIORITY_WEIGHTS["MEDIUM_PRIORITY"],
+            3: Constants.PRIORITY_WEIGHTS["HIGH_PRIORITY"]
+        }
         
         # 制約緩和メッセージ
         self.relax_messages = {
@@ -930,7 +1080,9 @@ class CompleteScheduleEngine:
                         if duty_name in [loc['name'] for loc in self.unified_config.get_work_locations()]:
                             duty_id = [i for i, loc in enumerate(self.unified_config.get_work_locations()) 
                                      if loc['name'] == duty_name][0]
-                            penalty = priority_weights.get(priority, 0)
+                            # 優先度の型を明示的に変換（文字列の場合に対応）
+                            priority_key = int(priority) if isinstance(priority, str) else priority
+                            penalty = priority_weights.get(priority_key, 0)
                             
                             # 優先度に基づいたペナルティ設定
                             for day in range(n_days):
@@ -1799,6 +1951,12 @@ class CompleteGUI:
         if 'calendar_data' not in st.session_state:
             st.session_state.calendar_data = {}
         
+        # プロファイルロック機能の初期化
+        if 'profile_locked' not in st.session_state:
+            st.session_state.profile_locked = False
+        if 'locked_profile_path' not in st.session_state:
+            st.session_state.locked_profile_path = None
+        
         # 設定変更フラグの初期化
         if 'settings_changed' not in st.session_state:
             st.session_state.settings_changed = False
@@ -1811,8 +1969,32 @@ class CompleteGUI:
         if 'last_employees' not in st.session_state:
             st.session_state.last_employees = self.unified_config.get_employees()
             
-        # アプリ起動時に保存された希望データを自動復元
-        self._auto_restore_calendar_data()
+        # アプリ起動時に保存された希望データを自動復元（安全版）
+        self._safe_auto_restore_calendar_data()
+    
+    def _safe_auto_restore_calendar_data(self):
+        """
+        安全なアプリ起動時自動復元
+        不正なプロファイル読み込みを防ぐ
+        """
+        try:
+            # プロファイルロック中は復元を完全にスキップ
+            if st.session_state.get('profile_locked', False):
+                print("[DEBUG] プロファイルロック中のためカレンダーデータ復元をスキップ")
+                return
+                
+            # セッション状態が既にある場合はスキップ（再実行対応）
+            if st.session_state.calendar_data:
+                print("[DEBUG] カレンダーデータが既に存在するため復元をスキップ")
+                return
+                
+            # 統一設定からの自動復元は無効化（予期しないプロファイル読み込みを防ぐ）
+            print("[DEBUG] 安全のため自動復元をスキップ - ユーザーが明示的に読み込む必要があります")
+            
+        except Exception as e:
+            print(f"[DEBUG] 安全復元中にエラー: {e}")
+            # エラーが発生しても処理を続行
+            pass
     
     def _auto_restore_calendar_data(self):
         """
@@ -1862,32 +2044,40 @@ class CompleteGUI:
                     self.unified_config.update_employees(employees)
                     st.session_state.last_employees = employees.copy()
                     
-                    # プロファイルモード中の保存
+                    # 保存処理（プロファイルモード中は自動保存しない）
                     if self.unified_config.profile_mode:
-                        # 現在のプロファイルを更新
-                        self.unified_config.config["employees"] = employees
-                        # プロファイルファイルに保存
-                        if self.unified_config.save_profile_changes():
-                            st.success("✅ 従業員設定をプロファイルに保存しました")
-                        else:
-                            st.warning("⚠️ プロファイルへの保存に失敗しました")
+                        # プロファイルモード中は変更フラグのみ設定
+                        st.session_state.settings_changed = True
+                        st.info("📝 従業員設定が変更されました。手動で保存してください。")
                     else:
-                        # メイン設定を更新
+                        # メイン設定は自動保存
                         if self.unified_config.save_config():
                             st.success("✅ 従業員設定を自動保存しました")
         except Exception as e:
             st.error(f"❌ 従業員設定の保存に失敗: {e}")
     
     def _auto_save_work_locations(self):
-        """担務設定の自動保存"""
+        """担務設定の自動保存（改善版）"""
         try:
-            # プロファイルモード中は現在のプロファイルに保存
-            if self.unified_config.profile_mode:
-                self.unified_config.save_profile_changes()
-                st.success("✅ 担務設定をプロファイルに保存しました")
+            # 担務変更画面の表示状態をチェック
+            if st.session_state.get('show_config', False):
+                # 担務変更画面での変更の場合
+                if self.unified_config.profile_mode:
+                    # プロファイルモード中は変更フラグのみ設定（メッセージは表示しない）
+                    st.session_state.settings_changed = True
+                else:
+                    # メイン設定は自動保存（メッセージは表示しない）
+                    self.unified_config.save_config()
             else:
-                self.unified_config.save_config()
-                st.success("✅ 担務設定を自動保存しました")
+                # メインページでの変更の場合
+                if self.unified_config.profile_mode:
+                    # プロファイルモード中は変更フラグのみ設定
+                    st.session_state.settings_changed = True
+                    st.info("📝 担務設定が変更されました。手動で保存してください。")
+                else:
+                    # メイン設定は自動保存
+                    self.unified_config.save_config()
+                    st.success("✅ 担務設定を自動保存しました")
         except Exception as e:
             st.error(f"❌ 担務設定の保存に失敗: {e}")
     
@@ -1922,11 +2112,13 @@ class CompleteGUI:
             # 統一設定に保存
             self.unified_config.update_priorities(new_priorities)
             
-            # プロファイルモード中は現在のプロファイルに保存
+            # 保存処理（プロファイルモード中は自動保存しない）
             if self.unified_config.profile_mode:
-                self.unified_config.save_profile_changes()
-                st.success("✅ 優先度設定をプロファイルに保存しました")
+                # プロファイルモード中は変更フラグのみ設定
+                st.session_state.settings_changed = True
+                st.info("📝 優先度設定が変更されました。手動で保存してください。")
             else:
+                # メイン設定は自動保存（update_prioritiesで既に保存済み）
                 st.success("✅ 優先度設定を自動保存しました")
         except Exception as e:
             st.error(f"❌ 優先度設定の保存に失敗: {e}")
@@ -2039,13 +2231,25 @@ class CompleteGUI:
         with st.expander("ℹ️ 設定情報", expanded=True):
             # 現在の設定名を表示（変更不可）
             st.info(f"現在の設定: **{self.unified_config.get_config_name()}**")
-            st.caption("📝 設定ファイルの変更・新規作成はメインページで行ってください")
-            st.caption("💾 変更は自動保存されます")
+            
+            # プロファイルモード中の場合、専用の警告を表示
+            if self.unified_config.profile_mode:
+                st.warning("📂 プロファイルモード中です。")
+                st.caption(f"ファイル: {os.path.basename(self.unified_config.current_profile_path)}")
+                st.caption("💾 変更は手動で保存してください")
+                st.caption("🔄 メインページでプロファイルを切り替えることができます")
+            else:
+                st.caption("📝 設定ファイルの変更・新規作成はメインページで行ってください")
+                st.caption("💾 変更は自動保存されます")
         
         st.markdown("---")
         
         st.subheader("勤務場所設定")
         st.info(f"現在の勤務場所数: {len(self.unified_config.get_work_locations())} / 15（最大）")
+        
+        # プロファイルモード中の場合、操作ガイドを表示
+        if self.unified_config.profile_mode:
+            st.info("📝 プロファイルモード中です。変更は手動で保存してください。")
         
         # 現在の勤務場所一覧
         duty_locations = self.unified_config.get_work_locations()
@@ -2061,8 +2265,7 @@ class CompleteGUI:
                 new_name = st.text_input(
                     "勤務場所名",
                     value=location["name"],
-                    key=f"loc_name_{i}",
-                    on_change=self._auto_save_work_locations
+                    key=f"loc_name_{i}"
                 )
             
             with col2:
@@ -2070,8 +2273,7 @@ class CompleteGUI:
                     "勤務タイプ",
                     ["一徹勤務", "日勤", "夜勤", "その他"],
                     index=["一徹勤務", "日勤", "夜勤", "その他"].index(location.get("type", "一徹勤務")),
-                    key=f"loc_type_{i}",
-                    on_change=self._auto_save_work_locations
+                    key=f"loc_type_{i}"
                 )
             
             with col3:
@@ -2080,16 +2282,14 @@ class CompleteGUI:
                     min_value=1,
                     max_value=24,
                     value=location.get("duration", 16),
-                    key=f"loc_duration_{i}",
-                    on_change=self._auto_save_work_locations
+                    key=f"loc_duration_{i}"
                 )
             
             with col4:
                 new_color = st.color_picker(
                     "色",
                     value=location.get("color", "#FF6B6B"),
-                    key=f"loc_color_{i}",
-                    on_change=self._auto_save_work_locations
+                    key=f"loc_color_{i}"
                 )
             
             with col5:
@@ -2101,6 +2301,9 @@ class CompleteGUI:
                         current_locations.pop(i)
                         if self.unified_config.update_work_locations(current_locations):
                             st.success(f"「{location_name}」を削除しました")
+                            # プロファイルモード中は変更フラグを設定
+                            if self.unified_config.profile_mode:
+                                st.session_state.settings_changed = True
                             st.rerun()
                         else:
                             st.error("削除に失敗しました")
@@ -2124,13 +2327,17 @@ class CompleteGUI:
             
             st.markdown("---")
         
-        # 変更があった場合は自動保存
+        # 変更があった場合は自動保存（改善版）
         if changes_made:
-            if self.unified_config.save_config():
-                st.success("✅ 変更を自動保存しました")
-                st.rerun()
+            if self.unified_config.profile_mode:
+                # プロファイルモード中は変更フラグのみ設定
+                st.session_state.settings_changed = True
             else:
-                st.error("自動保存に失敗しました")
+                # メイン設定は自動保存
+                if self.unified_config.save_config():
+                    st.success("✅ 変更を自動保存しました")
+                else:
+                    st.error("自動保存に失敗しました")
         
         # 新規追加（最大15まで）
         if len(duty_locations) < 15:
@@ -2169,6 +2376,9 @@ class CompleteGUI:
                             current_locations.append(new_location)
                             if self.unified_config.update_work_locations(current_locations):
                                 st.success(f"「{add_name}」を追加しました")
+                                # プロファイルモード中は変更フラグを設定
+                                if self.unified_config.profile_mode:
+                                    st.session_state.settings_changed = True
                                 st.rerun()
                             else:
                                 st.error("保存に失敗しました")
@@ -2176,6 +2386,23 @@ class CompleteGUI:
                         st.error("勤務場所名を入力してください")
         else:
             st.warning("⚠️ 最大15勤務場所まで追加できます")
+        
+        st.markdown("---")
+        
+        # 手動保存ボタン（プロファイルモード中のみ表示）
+        if self.unified_config.profile_mode:
+            st.subheader("💾 保存")
+            if st.session_state.get('settings_changed', False):
+                st.warning("⚠️ 未保存の変更があります")
+                if st.button("💾 プロファイルに保存", use_container_width=True):
+                    if self.unified_config.save_profile_changes():
+                        st.success("✅ プロファイルに保存しました")
+                        st.session_state.settings_changed = False
+                        st.rerun()
+                    else:
+                        st.error("❌ 保存に失敗しました")
+            else:
+                st.info("✅ すべての変更が保存済みです")
         
         st.markdown("---")
     
@@ -2327,8 +2554,138 @@ class CompleteGUI:
                     st.success("✅ メイン設定に戻りました")
                     st.rerun()
             else:
-                # 現在の設定名を表示
-                st.info(f"現在の設定: **{self.unified_config.get_config_name()}**")
+                # 読み込みセクション（上部に移動）
+                st.subheader("📂 読み込み")
+                print(f"[DEBUG] 読み込みセクション表示中 - profile_mode: {self.unified_config.profile_mode}")
+                profiles = self.unified_config.get_profile_list()
+                
+                if profiles:
+                    # プロファイルオプションを一意なキーで生成（ファイルパスベース）
+                    profile_options = {}
+                    profile_display_names = []
+                    for p in profiles:
+                        # 一意なキーとして「名前 (日付) [パス]」形式を使用
+                        unique_key = f"{p['name']} ({p['date']}) [{os.path.basename(p['filepath'])}]"
+                        profile_options[unique_key] = p['filepath']
+                        profile_display_names.append(unique_key)
+                
+                    # メイン設定モード時のみ選択可能（デフォルト選択を追加）
+                    profile_options_with_default = ["選択してください"] + profile_display_names
+                    
+                    # セッション状態をチェックして強制的にデフォルトに設定
+                    if 'profile_selectbox' not in st.session_state:
+                        st.session_state.profile_selectbox = "選択してください"
+                    
+                    selected_profile_key = st.selectbox(
+                        "保存済み設定", 
+                        options=profile_options_with_default,
+                        key="profile_selectbox",
+                        index=0  # 明示的にデフォルト選択
+                    )
+                    
+                    print(f"[DEBUG] プロファイル選択状況 - selected: {selected_profile_key}, session: {st.session_state.get('profile_selectbox', 'なし')}")
+                    
+                    # 初回実行時の安全ガード
+                    if 'app_initialized' not in st.session_state:
+                        st.session_state.app_initialized = True
+                        initial_run = True
+                    else:
+                        initial_run = False
+                    
+                    # プロファイルロック状態表示と解除オプション
+                    if st.session_state.get('profile_locked', False):
+                        locked_path = st.session_state.get('locked_profile_path', '')
+                        locked_name = os.path.basename(locked_path).replace('.json', '').replace('_20250704', '') if locked_path else '不明'
+                        st.info(f"🔒 現在のプロファイル: {locked_name}")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("🔓 プロファイル変更を許可", use_container_width=True, key="unlock_profile_btn"):
+                                st.session_state.profile_locked = False
+                                st.session_state.locked_profile_path = None
+                                st.success("✅ プロファイルロックを解除しました")
+                                st.rerun()
+                        with col2:
+                            # 現在のプロファイル再読み込み
+                            if st.button("🔄 再読み込み", use_container_width=True, key="reload_profile_btn"):
+                                if locked_path and os.path.exists(locked_path):
+                                    self.unified_config.load_profile(locked_path)
+                                    self.employees = self.unified_config.get_employees()
+                                    st.success("✅ プロファイルを再読み込みしました")
+                                    st.rerun()
+                    
+                    # セッション状態でボタン状態を制御
+                    button_disabled = (st.session_state.get('profile_locked', False) or 
+                                     selected_profile_key == "選択してください" or
+                                     initial_run)  # 初回実行時は無効化
+                    
+                    # ボタンクリック処理（厳密なチェック）
+                    if not st.session_state.get('profile_locked', False):  # ロック中でない場合のみ表示
+                        button_clicked = st.button("📥 読み込む", use_container_width=True, key="load_profile_btn", disabled=button_disabled)
+                    else:
+                        button_clicked = False  # ロック中はボタンクリック無効
+                    
+                    # デバッグ情報
+                    print(f"[DEBUG] ボタン状態 - clicked: {button_clicked}, disabled: {button_disabled}, selected: {selected_profile_key}, initial_run: {initial_run}")
+                    
+                    if button_clicked and not button_disabled and selected_profile_key != "選択してください":
+                        filepath = profile_options[selected_profile_key]
+                        print(f"[DEBUG] 明示的なボタンクリックによるプロファイル読み込み: {filepath}")
+                        
+                        # プロファイル読み込み結果を詳細にチェック
+                        load_result = self.unified_config.load_profile(filepath)
+                        current_locked_path = st.session_state.get('locked_profile_path', '')
+                        
+                        if load_result:
+                            # プロファイルから従業員リストを取得して更新
+                            self.employees = self.unified_config.get_employees()
+                            print(f"[DEBUG] プロファイル読み込み後の従業員更新: {self.employees}")
+                        
+                            # セッション状態を完全にリセット（改善版）
+                            reset_keys = []
+                            for key in list(st.session_state.keys()):
+                                if (key.startswith('priority_') or key == 'calendar_data' or 
+                                    key.startswith('location_') or key.startswith('loc_') or
+                                    key == 'main_emp_select'):  # 従業員選択もリセット
+                                    reset_keys.append(key)
+                                    del st.session_state[key]
+                            
+                            # 画面状態はリセットしない（担務変更画面が閉じてしまうのを防ぐ）
+                            # show_config, show_priority_settings は保持
+                            
+                            print(f"[DEBUG] リセットされたセッション状態: {reset_keys}")
+                            
+                            # 新しい従業員リストでセッション状態を更新
+                            st.session_state.last_employees = self.employees.copy()
+                            st.session_state.settings_changed = False
+                            
+                            # プロファイルから希望データを復元
+                            profile_calendar_data = self.unified_config.config.get("calendar_data", {})
+                            if profile_calendar_data:
+                                if "calendar_data" in profile_calendar_data:
+                                    saved_data = profile_calendar_data["calendar_data"]
+                                    restored_data = self._deserialize_calendar_data(saved_data)
+                                    st.session_state.calendar_data = restored_data.copy()
+                                else:
+                                    restored_data = self._deserialize_calendar_data(profile_calendar_data)
+                                    st.session_state.calendar_data = restored_data.copy()
+                        
+                            st.success(f"✅ {selected_profile_key} を読み込みました")
+                            st.success(f"👥 従業員: {', '.join(self.employees[:5])}{'...' if len(self.employees) > 5 else ''}")
+                            
+                            # 強制的に画面を再描画
+                            st.rerun()
+                        elif os.path.abspath(filepath) == os.path.abspath(current_locked_path):
+                            # 既に読み込み済みのプロファイルを再選択した場合
+                            st.info(f"✅ {selected_profile_key} は既に読み込み済みです")
+                        elif not os.path.exists(filepath):
+                            # ファイルが存在しない場合
+                            st.error(f"❌ ファイルが見つかりません: {selected_profile_key}")
+                        else:
+                            # その他のエラー
+                            st.error(f"❌ {selected_profile_key} の読み込みに失敗しました")
+                else:
+                    st.info("保存済みの設定はありません")
             
             # 保存
             st.subheader("💾 保存")
@@ -2356,49 +2713,142 @@ class CompleteGUI:
                     else:
                         st.error("設定名を入力してください")
             
-            # 読み込み
-            st.subheader("📂 読み込み")
-            profiles = self.unified_config.get_profile_list()
-            
-            if profiles:
-                profile_options = {f"{p['name']} ({p['date']})": p['filepath'] for p in profiles}
-                selected_profile = st.selectbox("保存済み設定", options=list(profile_options.keys()))
+            # 読み込みセクション（上部に移動済み - 重複のためコメントアウト）
+            if False:  # 重複セクションを無効化
+                # if not self.unified_config.profile_mode:
+                st.subheader("📂 読み込み")
+                print(f"[DEBUG] 読み込みセクション表示中 - profile_mode: {self.unified_config.profile_mode}")
+                profiles = self.unified_config.get_profile_list()
                 
-                if st.button("📥 読み込む", use_container_width=True):
-                    filepath = profile_options[selected_profile]
-                    if self.unified_config.load_profile(filepath):
-                        # プロファイルから従業員リストを取得
-                        employees = self.unified_config.get_employees()
+                if profiles:
+                    # プロファイルオプションを一意なキーで生成（ファイルパスベース）
+                    profile_options = {}
+                    profile_display_names = []
+                    for p in profiles:
+                        # 一意なキーとして「名前 (日付) [パス]」形式を使用
+                        unique_key = f"{p['name']} ({p['date']}) [{os.path.basename(p['filepath'])}]"
+                        profile_options[unique_key] = p['filepath']
+                        profile_display_names.append(unique_key)
+                
+                    # メイン設定モード時のみ選択可能（デフォルト選択を追加）
+                    profile_options_with_default = ["選択してください"] + profile_display_names
+                    
+                    # セッション状態をチェックして強制的にデフォルトに設定
+                    if 'profile_selectbox' not in st.session_state:
+                        st.session_state.profile_selectbox = "選択してください"
+                    
+                    selected_profile_key = st.selectbox(
+                        "保存済み設定", 
+                        options=profile_options_with_default,
+                        key="profile_selectbox",
+                        index=0  # 明示的にデフォルト選択
+                    )
+                    
+                    print(f"[DEBUG] プロファイル選択状況 - selected: {selected_profile_key}, session: {st.session_state.get('profile_selectbox', 'なし')}")
+                    
+                    # 読み込みボタン（プロファイルモード中は表示しない）
+                    if not self.unified_config.profile_mode:
+                        # 初回実行時の安全ガード
+                        if 'app_initialized' not in st.session_state:
+                            st.session_state.app_initialized = True
+                            initial_run = True
+                        else:
+                            initial_run = False
                         
-                        # セッション状態を完全にリセット
-                        for key in list(st.session_state.keys()):
-                            if key.startswith('priority_') or key == 'calendar_data':
-                                del st.session_state[key]
+                        # プロファイルロック状態表示と解除オプション
+                        if st.session_state.get('profile_locked', False):
+                            locked_path = st.session_state.get('locked_profile_path', '')
+                            locked_name = os.path.basename(locked_path).replace('.json', '').replace('_20250704', '') if locked_path else '不明'
+                            st.info(f"🔒 現在のプロファイル: {locked_name}")
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button("🔓 プロファイル変更を許可", use_container_width=True, key="unlock_profile_btn"):
+                                    st.session_state.profile_locked = False
+                                    st.session_state.locked_profile_path = None
+                                    st.success("✅ プロファイルロックを解除しました")
+                                    st.rerun()
+                            with col2:
+                                # 現在のプロファイル再読み込み
+                                if st.button("🔄 再読み込み", use_container_width=True, key="reload_profile_btn"):
+                                    if locked_path and os.path.exists(locked_path):
+                                        self.unified_config.load_profile(locked_path)
+                                        self.employees = self.unified_config.get_employees()
+                                        st.success("✅ プロファイルを再読み込みしました")
+                                        st.rerun()
                         
-                        # 新しい従業員リストでセッション状態を更新
-                        st.session_state.last_employees = employees.copy()
-                        st.session_state.settings_changed = False
+                        # セッション状態でボタン状態を制御
+                        button_disabled = (st.session_state.get('profile_locked', False) or 
+                                         selected_profile_key == "選択してください" or
+                                         initial_run)  # 初回実行時は無効化
                         
-                        # プロファイルから希望データを復元
-                        profile_calendar_data = self.unified_config.config.get("calendar_data", {})
-                        if profile_calendar_data:
-                            if "calendar_data" in profile_calendar_data:
-                                saved_data = profile_calendar_data["calendar_data"]
-                                restored_data = self._deserialize_calendar_data(saved_data)
-                                st.session_state.calendar_data = restored_data.copy()
+                        # ボタンクリック処理（厳密なチェック）
+                        if not st.session_state.get('profile_locked', False):  # ロック中でない場合のみ表示
+                            button_clicked = st.button("📥 読み込む", use_container_width=True, key="load_profile_btn", disabled=button_disabled)
+                        else:
+                            button_clicked = False  # ロック中はボタンクリック無効
+                        
+                        # デバッグ情報
+                        print(f"[DEBUG] ボタン状態 - clicked: {button_clicked}, disabled: {button_disabled}, selected: {selected_profile_key}, initial_run: {initial_run}")
+                        
+                        if button_clicked and not button_disabled and selected_profile_key != "選択してください":
+                            filepath = profile_options[selected_profile_key]
+                            print(f"[DEBUG] 明示的なボタンクリックによるプロファイル読み込み: {filepath}")
+                            
+                            # プロファイル読み込み結果を詳細にチェック
+                            load_result = self.unified_config.load_profile(filepath)
+                            current_locked_path = st.session_state.get('locked_profile_path', '')
+                            
+                            if load_result:
+                                # プロファイルから従業員リストを取得して更新
+                                self.employees = self.unified_config.get_employees()
+                                print(f"[DEBUG] プロファイル読み込み後の従業員更新: {self.employees}")
+                            
+                            # セッション状態を完全にリセット（改善版）
+                            reset_keys = []
+                            for key in list(st.session_state.keys()):
+                                if (key.startswith('priority_') or key == 'calendar_data' or 
+                                    key.startswith('location_') or key.startswith('loc_') or
+                                    key == 'main_emp_select'):  # 従業員選択もリセット
+                                    reset_keys.append(key)
+                                    del st.session_state[key]
+                            
+                            # 画面状態はリセットしない（担務変更画面が閉じてしまうのを防ぐ）
+                            # show_config, show_priority_settings は保持
+                            
+                            print(f"[DEBUG] リセットされたセッション状態: {reset_keys}")
+                            
+                            # 新しい従業員リストでセッション状態を更新
+                            st.session_state.last_employees = self.employees.copy()
+                            st.session_state.settings_changed = False
+                            
+                            # プロファイルから希望データを復元
+                            profile_calendar_data = self.unified_config.config.get("calendar_data", {})
+                            if profile_calendar_data:
+                                if "calendar_data" in profile_calendar_data:
+                                    saved_data = profile_calendar_data["calendar_data"]
+                                    restored_data = self._deserialize_calendar_data(saved_data)
+                                    st.session_state.calendar_data = restored_data.copy()
+                                else:
+                                    restored_data = self._deserialize_calendar_data(profile_calendar_data)
+                                    st.session_state.calendar_data = restored_data.copy()
+                            
+                                st.success(f"✅ {selected_profile_key} を読み込みました")
+                                st.success(f"👥 従業員: {', '.join(self.employees[:5])}{'...' if len(self.employees) > 5 else ''}")
+                                
+                                # 強制的に画面を再描画
+                                st.rerun()
+                            elif os.path.abspath(filepath) == os.path.abspath(current_locked_path):
+                                # 既に読み込み済みのプロファイルを再選択した場合
+                                st.info(f"✅ {selected_profile_key} は既に読み込み済みです")
+                            elif not os.path.exists(filepath):
+                                # ファイルが存在しない場合
+                                st.error(f"❌ ファイルが見つかりません: {selected_profile_key}")
                             else:
-                                restored_data = self._deserialize_calendar_data(profile_calendar_data)
-                                st.session_state.calendar_data = restored_data.copy()
-                        
-                        st.success(f"✅ {selected_profile} を読み込みました")
-                        st.success(f"👥 従業員: {', '.join(employees[:5])}{'...' if len(employees) > 5 else ''}")
-                        
-                        # 強制的に画面を再描画
-                        st.rerun()
-                    else:
-                        st.error("読み込みに失敗しました")
-            else:
-                st.info("保存済みの設定はありません")
+                                # その他のエラー
+                                st.error(f"❌ {selected_profile_key} の読み込みに失敗しました")
+                else:
+                    st.info("保存済みの設定はありません")
         
         st.markdown("---")
         

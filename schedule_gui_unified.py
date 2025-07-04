@@ -188,6 +188,8 @@ class UnifiedConfigurationManager:
     def __init__(self):
         self.config_file = "configs/unified_settings.json"
         self.backup_dir = "configs/backups"
+        self.profile_mode = False  # プロファイル読み込み中フラグ
+        self.current_profile_path = None  # 現在のプロファイルパス
         self._ensure_directories()
         self.config = self._load_or_create_default()
         
@@ -250,6 +252,11 @@ class UnifiedConfigurationManager:
     
     def save_config(self, config_data=None):
         """設定を保存（修正版）"""
+        # プロファイルモード中はメイン設定への保存を無効化
+        if self.profile_mode:
+            print(f"[DEBUG] プロファイルモード中のため、メイン設定への保存をスキップ")
+            return True
+            
         # 引数が渡されない場合は現在の設定を使用（後方互換性）
         if config_data is None:
             config_data = json.loads(json.dumps(self.config))  # 深いコピーで参照問題を完全回避
@@ -280,7 +287,7 @@ class UnifiedConfigurationManager:
             return False
     
     def save_as_profile(self, profile_name):
-        """名前を付けて保存"""
+        """名前を付けて保存（改善版）"""
         if not profile_name:
             return False
         
@@ -290,43 +297,83 @@ class UnifiedConfigurationManager:
         filename = f"{profile_name}_{datetime.now().strftime('%Y%m%d')}.json"
         filepath = os.path.join(profiles_dir, filename)
         
-        profile_data = copy.deepcopy(self.config)
+        # 現在の設定を完全にコピー（参照を断ち切る）
+        profile_data = json.loads(json.dumps(self.config))  # JSON経由で完全独立コピー
         profile_data["config_name"] = profile_name
         profile_data["saved_as_profile"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # デバッグ: 保存前の従業員リストを確認
+        print(f"[DEBUG] 保存する従業員リスト: {profile_data.get('employees', [])}")
         
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(profile_data, f, ensure_ascii=False, indent=2)
+            print(f"[DEBUG] プロファイル保存完了: {filepath}")
             return filename
         except Exception as e:
             print(f"プロファイル保存エラー: {e}")
             return None
     
     def load_profile(self, profile_path):
-        """プロファイルを読み込む"""
+        """プロファイルを読み込む（改善版）"""
         try:
-            print(f"[DEBUG] プロファイル読み込み: {profile_path}")
+            print(f"[DEBUG] プロファイル読み込み開始: {profile_path}")
+            
+            # ファイルが存在するか確認
+            if not os.path.exists(profile_path):
+                print(f"[ERROR] ファイルが存在しません: {profile_path}")
+                return False
             
             with open(profile_path, 'r', encoding='utf-8') as f:
                 profile_data = json.load(f)
             
-            # 希望データの有無を確認
-            if "calendar_data" in profile_data:
-                print(f"[DEBUG] プロファイルの希望データ: {profile_data['calendar_data']}")
-            else:
-                print(f"[DEBUG] このプロファイルには希望データがありません")
+            # 読み込んだデータの検証
+            if not profile_data:
+                print(f"[ERROR] プロファイルデータが空です")
+                return False
             
-            # プロファイルのデータを深いコピーで設定（希望データも含む）
-            self.config = copy.deepcopy(profile_data)
+            # 現在の設定を完全に置き換える
+            self.config = json.loads(json.dumps(profile_data))  # 完全独立コピー
             
-            # デバッグ: 読み込み直後の設定名を確認
-            print(f"[DEBUG] プロファイル読み込み直後の設定名: {self.config.get('config_name', '名称未設定')}")
+            # プロファイルモードを有効化
+            self.profile_mode = True
+            self.current_profile_path = profile_path
             
-            # save_config()は呼ばない（プロファイル読み込み時はメイン設定を更新しない）
+            # デバッグ出力
+            employees = self.config.get("employees", [])
+            config_name = self.config.get("config_name", "名称未設定")
+            print(f"[DEBUG] 設定名: {config_name}")
+            print(f"[DEBUG] 従業員数: {len(employees)}")
+            print(f"[DEBUG] 従業員リスト: {employees}")
+            
             return True
         except Exception as e:
-            print(f"プロファイル読み込みエラー: {e}")
+            print(f"[ERROR] プロファイル読み込みエラー: {e}")
+            import traceback
+            traceback.print_exc()
             return False
+    
+    def exit_profile_mode(self):
+        """プロファイルモードを解除してメイン設定に戻る"""
+        self.profile_mode = False
+        self.current_profile_path = None
+        # メイン設定を再読み込み
+        self.config = self._load_or_create_default()
+        print(f"[DEBUG] プロファイルモード解除、メイン設定に復帰")
+    
+    def save_profile_changes(self):
+        """プロファイルモード中の変更を現在のプロファイルに保存"""
+        if self.profile_mode and self.current_profile_path:
+            try:
+                self.config["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(self.current_profile_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.config, f, ensure_ascii=False, indent=2)
+                print(f"[DEBUG] プロファイル変更を保存: {self.current_profile_path}")
+                return True
+            except Exception as e:
+                print(f"プロファイル保存エラー: {e}")
+                return False
+        return False
     
     def save_calendar_data(self, calendar_data_with_date):
         """希望データ専用の保存メソッド（Opus年月別ファイル方式）"""
@@ -659,9 +706,8 @@ class WorkLocationManager:
 class CompleteScheduleEngine:
     """完全版勤務表生成エンジン（Phase 1: 優先度対応）"""
     
-    def __init__(self, location_manager, config_manager=None):
-        self.location_manager = location_manager
-        self.config_manager = config_manager
+    def __init__(self, unified_config):
+        self.unified_config = unified_config
         
         # 非番シフトID（動的に設定）
         self.OFF_SHIFT_ID = None
@@ -694,7 +740,7 @@ class CompleteScheduleEngine:
     
     def _get_keijo_shift_id(self):
         """警乗のシフトIDを取得"""
-        duty_names = self.location_manager.get_duty_names()
+        duty_names = self.unified_config.get_duty_names()
         for i, name in enumerate(duty_names):
             if "警乗" in name:
                 return i
@@ -771,13 +817,14 @@ class CompleteScheduleEngine:
         self.relief_employee_id = self.n_employees - 1
         
         # 勤務場所設定
-        duty_locations = self.location_manager.get_duty_locations()
+        duty_locations = self.unified_config.get_work_locations()
         self.duty_names = [loc["name"] for loc in duty_locations]
         self.n_duties = len(self.duty_names)
         
         # シフト定義: 各勤務場所 + 休暇 + 非番
         # 非番は自動生成されるが、制約処理のために明示的なシフトとして扱う
-        self.shift_names = self.duty_names + [self.location_manager.holiday_type["name"]] + ["非番"]
+        holiday_type = self.unified_config.get_holiday_type()
+        self.shift_names = self.duty_names + [holiday_type["name"]] + ["非番"]
         self.n_shifts = len(self.shift_names)
         self.OFF_SHIFT_ID = self.n_shifts - 1  # 最後が非番
         
@@ -852,16 +899,16 @@ class CompleteScheduleEngine:
                                 debug_info.append(f"✅ {employee_name}: {day+1}日の{duty_name}勤務回避追加")
         
         # Phase 1: 優先度ペナルティ処理
-        if employee_priorities and self.config_manager:
-            priority_weights = self.config_manager.get_priority_weights()
+        if employee_priorities:
+            priority_weights = self.unified_config.get_priority_weights()
             debug_info.append(f"🎯 Phase 1: 優先度重み適用 {priority_weights}")
             
             for emp_name, priorities in employee_priorities.items():
                 if emp_name in self.name_to_id:
                     emp_id = self.name_to_id[emp_name]
                     for duty_name, priority in priorities.items():
-                        if duty_name in [loc['name'] for loc in self.location_manager.get_duty_locations()]:
-                            duty_id = [i for i, loc in enumerate(self.location_manager.get_duty_locations()) 
+                        if duty_name in [loc['name'] for loc in self.unified_config.get_work_locations()]:
+                            duty_id = [i for i, loc in enumerate(self.unified_config.get_work_locations()) 
                                      if loc['name'] == duty_name][0]
                             penalty = priority_weights.get(priority, 0)
                             
@@ -1275,9 +1322,8 @@ class CompleteScheduleEngine:
         
         # Phase 1: 従業員優先度取得
         employee_priorities = None
-        if self.config_manager:
-            employee_priorities = self.config_manager.get_employee_priorities()
-            self.priority_weights = self.config_manager.get_priority_weights()
+        employee_priorities = self.unified_config.get_employee_priorities()
+        self.priority_weights = self.unified_config.get_priority_weights()
         
         # カレンダーデータから要求文生成
         requirement_lines = []
@@ -1314,7 +1360,7 @@ class CompleteScheduleEngine:
                 
                 # 分析に必要なデータを収集
                 # 実際の勤務場所数を取得（全勤務場所）
-                work_locations = self.location_manager.get_duty_locations()
+                work_locations = self.unified_config.get_work_locations()
                 work_locations_count = len(work_locations)
                 
                 constraints_data = {'work_locations_count': work_locations_count}
@@ -1371,7 +1417,7 @@ class CompleteScheduleEngine:
             'cross_analysis': cross_analysis,
             'debug_info': debug_info + prev_debug,
             'employees': employee_names,
-            'location_manager': self.location_manager
+            'unified_config': self.unified_config
         }
 
 
@@ -1464,10 +1510,11 @@ class ExcelExporter:
         cross_constraints = result_data.get('cross_constraints', [])
         employees = result_data['employees']
         n_days = result_data['n_days']
-        location_manager = result_data['location_manager']
+        unified_config = result_data['unified_config']
         
-        duty_names = location_manager.get_duty_names()
-        holiday_name = location_manager.holiday_type["name"]
+        duty_names = unified_config.get_duty_names()
+        holiday_type = unified_config.get_holiday_type()
+        holiday_name = holiday_type["name"]
         
         # ヘッダー行
         worksheet.write(0, 0, "従業員名", formats['header'])
@@ -1565,9 +1612,9 @@ class ExcelExporter:
         n_days = result_data['n_days']
         relax_level = result_data['relax_level']
         status = result_data['status']
-        location_manager = result_data['location_manager']
+        unified_config = result_data['unified_config']
         
-        duty_names = location_manager.get_duty_names()
+        duty_names = unified_config.get_duty_names()
         
         # ヘッダー
         headers = ["従業員名"] + [f"{name}回数" for name in duty_names] + [
@@ -1692,17 +1739,9 @@ class CompleteGUI:
         # 統一設定管理を使用
         self.unified_config = UnifiedConfigurationManager()
         
-        # 既存のWorkLocationManagerは互換性のために残すが、統一設定を参照
-        self.location_manager = WorkLocationManager()
-        self.location_manager.duty_locations = self.unified_config.get_work_locations()
-        self.location_manager.holiday_type = self.unified_config.get_holiday_type()
         
-        # 既存のConfigurationManagerも互換性のために残すが、統一設定を参照
-        self.config_manager = ConfigurationManager()
-        self.config_manager.current_config = copy.deepcopy(self.unified_config.config)
-        
-        # エンジンとエクスポーターは変更なし
-        self.engine = CompleteScheduleEngine(self.location_manager, self.config_manager)
+        # エンジンとエクスポーターは統一設定を使用
+        self.engine = CompleteScheduleEngine(self.unified_config)
         self.excel_exporter = ExcelExporter(self.engine)
         
         # セッション状態の初期化（既存のまま）
@@ -1758,6 +1797,152 @@ class CompleteGUI:
             # エラーが発生した場合は空のデータを返す
             return {}
     
+    # === 自動保存ヘルパーメソッド ===
+    def _auto_save_employees(self):
+        """従業員設定の自動保存（改善版）"""
+        try:
+            if 'employees_text' in st.session_state:
+                employees_text = st.session_state.employees_text
+                employees = [emp.strip() for emp in employees_text.split('\n') if emp.strip()]
+                
+                # 最低2名チェック
+                if len(employees) >= 2:
+                    # 設定を更新
+                    self.unified_config.update_employees(employees)
+                    st.session_state.last_employees = employees.copy()
+                    
+                    # プロファイルモード中の保存
+                    if self.unified_config.profile_mode:
+                        # 現在のプロファイルを更新
+                        self.unified_config.config["employees"] = employees
+                        # プロファイルファイルに保存
+                        if self.unified_config.save_profile_changes():
+                            st.success("✅ 従業員設定をプロファイルに保存しました")
+                        else:
+                            st.warning("⚠️ プロファイルへの保存に失敗しました")
+                    else:
+                        # メイン設定を更新
+                        if self.unified_config.save_config():
+                            st.success("✅ 従業員設定を自動保存しました")
+        except Exception as e:
+            st.error(f"❌ 従業員設定の保存に失敗: {e}")
+    
+    def _auto_save_work_locations(self):
+        """担務設定の自動保存"""
+        try:
+            # プロファイルモード中は現在のプロファイルに保存
+            if self.unified_config.profile_mode:
+                self.unified_config.save_profile_changes()
+                st.success("✅ 担務設定をプロファイルに保存しました")
+            else:
+                self.unified_config.save_config()
+                st.success("✅ 担務設定を自動保存しました")
+        except Exception as e:
+            st.error(f"❌ 担務設定の保存に失敗: {e}")
+    
+    def _auto_save_priorities(self):
+        """優先度設定の自動保存"""
+        try:
+            # セッション状態から優先度設定を再構築
+            new_priorities = {}
+            current_priorities = self.unified_config.get_employee_priorities()
+            duty_names = self.unified_config.get_duty_names()
+            
+            # セッション状態から従業員リストを取得
+            if 'last_employees' in st.session_state and st.session_state.last_employees:
+                target_employees = st.session_state.last_employees
+            else:
+                target_employees = ["Aさん", "Bさん", "Cさん"]
+            
+            # セッション状態から優先度設定を収集
+            for emp_name in target_employees:
+                emp_priorities = {}
+                for duty_name in duty_names:
+                    key = f"priority_{emp_name}_{duty_name}"
+                    if key in st.session_state:
+                        selected = st.session_state[key]
+                        priority_value = int(selected.split(" ")[0])
+                        emp_priorities[duty_name] = priority_value
+                    else:
+                        # デフォルト値
+                        emp_priorities[duty_name] = current_priorities.get(emp_name, {}).get(duty_name, 2)
+                new_priorities[emp_name] = emp_priorities
+            
+            # 統一設定に保存
+            self.unified_config.update_priorities(new_priorities)
+            
+            # プロファイルモード中は現在のプロファイルに保存
+            if self.unified_config.profile_mode:
+                self.unified_config.save_profile_changes()
+                st.success("✅ 優先度設定をプロファイルに保存しました")
+            else:
+                st.success("✅ 優先度設定を自動保存しました")
+        except Exception as e:
+            st.error(f"❌ 優先度設定の保存に失敗: {e}")
+    
+    def verify_profile_integrity(self):
+        """プロファイルの整合性を確認"""
+        if self.unified_config.profile_mode:
+            with st.expander("🔍 プロファイル診断", expanded=False):
+                profile_name = os.path.basename(self.unified_config.current_profile_path)
+                st.write(f"**現在のプロファイル**: {profile_name}")
+                
+                # ファイルから直接読み込んで比較
+                try:
+                    with open(self.unified_config.current_profile_path, 'r') as f:
+                        file_data = json.load(f)
+                    
+                    file_employees = file_data.get("employees", [])
+                    memory_employees = self.unified_config.get_employees()
+                    session_employees = st.session_state.get("last_employees", [])
+                    
+                    st.write(f"**ファイルの従業員数**: {len(file_employees)}")
+                    st.write(f"**メモリの従業員数**: {len(memory_employees)}")
+                    st.write(f"**セッションの従業員数**: {len(session_employees)}")
+                    
+                    if file_employees != memory_employees:
+                        st.error("⚠️ ファイルとメモリの従業員リストが一致しません")
+                    if memory_employees != session_employees:
+                        st.error("⚠️ メモリとセッションの従業員リストが一致しません")
+                    
+                    if st.button("🔄 強制同期"):
+                        self.unified_config.config["employees"] = file_employees
+                        st.session_state.last_employees = file_employees.copy()
+                        st.success("✅ 強制同期完了")
+                        st.rerun()
+                        
+                except Exception as e:
+                    st.error(f"診断エラー: {e}")
+    
+    def save_as_profile_with_confirmation(self, save_name):
+        """名前を付けて保存（確認付き）"""
+        if save_name:
+            # 現在の設定内容を表示
+            with st.expander("💾 保存する内容の確認"):
+                employees = self.unified_config.get_employees()
+                st.write(f"**設定名**: {save_name}")
+                st.write(f"**従業員数**: {len(employees)}")
+                st.write(f"**従業員**: {', '.join(employees[:5])}{'...' if len(employees) > 5 else ''}")
+                
+                locations = self.unified_config.get_work_locations()
+                st.write(f"**勤務場所**: {', '.join([loc['name'] for loc in locations])}")
+            
+            filename = self.unified_config.save_as_profile(save_name)
+            if filename:
+                st.success(f"✅ {filename} として保存しました")
+                st.session_state.settings_changed = False
+                
+                # 保存直後に検証
+                saved_path = os.path.join("configs/profiles", filename)
+                with open(saved_path, 'r') as f:
+                    saved_data = json.load(f)
+                saved_employees = saved_data.get("employees", [])
+                st.info(f"📁 保存確認: {len(saved_employees)}名の従業員を保存しました")
+            else:
+                st.error("保存に失敗しました")
+        else:
+            st.error("設定名を入力してください")
+    
     def run(self):
         """メイン実行"""
         self._setup_page()
@@ -1784,7 +1969,7 @@ class CompleteGUI:
         col1, col2 = st.columns([1, 9])
         with col1:
             if st.button("🔄 リセット"):
-                self.location_manager.reset_to_default()
+                self.unified_config.reset_to_defaults()
                 st.success("デフォルト設定に戻しました")
                 st.rerun()
         
@@ -1799,27 +1984,20 @@ class CompleteGUI:
             st.session_state.show_config = False
             st.rerun()
         
-        # === 現在の設定表示と保存のみ ===
-        with st.expander("💾 設定情報", expanded=True):
+        # === 現在の設定表示 ===
+        with st.expander("ℹ️ 設定情報", expanded=True):
             # 現在の設定名を表示（変更不可）
             st.info(f"現在の設定: **{self.unified_config.get_config_name()}**")
             st.caption("📝 設定ファイルの変更・新規作成はメインページで行ってください")
-            
-            # 保存のみ
-            if st.button("💾 設定を保存", use_container_width=True, key="config_save_only", type="primary"):
-                if self.unified_config.save_config():
-                    st.success("✅ 設定を保存しました")
-                    st.balloons()
-                else:
-                    st.error("保存に失敗しました")
+            st.caption("💾 変更は自動保存されます")
         
         st.markdown("---")
         
         st.subheader("勤務場所設定")
-        st.info(f"現在の勤務場所数: {len(self.location_manager.duty_locations)} / 15（最大）")
+        st.info(f"現在の勤務場所数: {len(self.unified_config.get_work_locations())} / 15（最大）")
         
         # 現在の勤務場所一覧
-        duty_locations = self.location_manager.get_duty_locations()
+        duty_locations = self.unified_config.get_work_locations()
         
         # 一時的な変更フラグ
         changes_made = False
@@ -1832,7 +2010,8 @@ class CompleteGUI:
                 new_name = st.text_input(
                     "勤務場所名",
                     value=location["name"],
-                    key=f"loc_name_{i}"
+                    key=f"loc_name_{i}",
+                    on_change=self._auto_save_work_locations
                 )
             
             with col2:
@@ -1840,7 +2019,8 @@ class CompleteGUI:
                     "勤務タイプ",
                     ["一徹勤務", "日勤", "夜勤", "その他"],
                     index=["一徹勤務", "日勤", "夜勤", "その他"].index(location.get("type", "一徹勤務")),
-                    key=f"loc_type_{i}"
+                    key=f"loc_type_{i}",
+                    on_change=self._auto_save_work_locations
                 )
             
             with col3:
@@ -1849,40 +2029,53 @@ class CompleteGUI:
                     min_value=1,
                     max_value=24,
                     value=location.get("duration", 16),
-                    key=f"loc_duration_{i}"
+                    key=f"loc_duration_{i}",
+                    on_change=self._auto_save_work_locations
                 )
             
             with col4:
                 new_color = st.color_picker(
                     "色",
                     value=location.get("color", "#FF6B6B"),
-                    key=f"loc_color_{i}"
+                    key=f"loc_color_{i}",
+                    on_change=self._auto_save_work_locations
                 )
             
             with col5:
                 if st.button("🗑️", key=f"delete_{i}"):
                     location_name = location["name"]
-                    self.location_manager.remove_duty_location(i)
-                    # 統一設定に保存
-                    if self.unified_config.update_work_locations(self.location_manager.duty_locations):
-                        st.success(f"「{location_name}」を削除しました")
-                        st.rerun()
-                    else:
-                        st.error("削除に失敗しました")
+                    # 統一設定から直接削除
+                    current_locations = self.unified_config.get_work_locations()
+                    if i < len(current_locations):
+                        current_locations.pop(i)
+                        if self.unified_config.update_work_locations(current_locations):
+                            st.success(f"「{location_name}」を削除しました")
+                            st.rerun()
+                        else:
+                            st.error("削除に失敗しました")
             
             # 変更があったかチェック
             if (new_name != location["name"] or 
                 new_type != location.get("type", "一徹勤務") or
                 new_duration != location.get("duration", 16) or
                 new_color != location.get("color", "#FF6B6B")):
-                self.location_manager.update_duty_location(i, new_name, new_type, new_duration, new_color)
+                # 統一設定を直接更新
+                current_locations = self.unified_config.get_work_locations()
+                if i < len(current_locations):
+                    current_locations[i] = {
+                        "name": new_name,
+                        "type": new_type,
+                        "duration": new_duration,
+                        "color": new_color
+                    }
+                    self.unified_config.update_work_locations(current_locations)
                 changes_made = True
             
             st.markdown("---")
         
         # 変更があった場合は自動保存
         if changes_made:
-            if self.unified_config.update_work_locations(self.location_manager.duty_locations):
+            if self.unified_config.save_config():
                 st.success("✅ 変更を自動保存しました")
                 st.rerun()
             else:
@@ -1910,13 +2103,20 @@ class CompleteGUI:
                 if submitted:
                     if add_name.strip():
                         # 重複チェック
-                        existing_names = [loc["name"] for loc in self.location_manager.duty_locations]
+                        existing_names = [loc["name"] for loc in self.unified_config.get_work_locations()]
                         if add_name.strip() in existing_names:
                             st.error(f"「{add_name}」は既に存在します")
                         else:
-                            self.location_manager.add_duty_location(add_name.strip(), add_type, add_duration, add_color)
-                            # 統一設定に保存
-                            if self.unified_config.update_work_locations(self.location_manager.duty_locations):
+                            # 統一設定に直接追加
+                            current_locations = self.unified_config.get_work_locations()
+                            new_location = {
+                                "name": add_name.strip(),
+                                "type": add_type,
+                                "duration": add_duration,
+                                "color": add_color
+                            }
+                            current_locations.append(new_location)
+                            if self.unified_config.update_work_locations(current_locations):
                                 st.success(f"「{add_name}」を追加しました")
                                 st.rerun()
                             else:
@@ -1927,19 +2127,6 @@ class CompleteGUI:
             st.warning("⚠️ 最大15勤務場所まで追加できます")
         
         st.markdown("---")
-        
-        # 簡易保存機能（下部に配置）
-        st.markdown("### 💾 設定を保存")
-        if st.button("💾 設定を保存", use_container_width=True, type="primary", key="config_bottom_save"):
-            # 勤務場所設定を統一設定に反映してから保存
-            if self.unified_config.update_work_locations(self.location_manager.duty_locations):
-                if self.unified_config.save_config():
-                    st.success("✅ 担務設定を保存しました")
-                    st.balloons()
-                else:
-                    st.error("保存に失敗しました")
-            else:
-                st.error("担務設定の更新に失敗しました")
     
     def _priority_settings_page(self):
         """勤務優先度設定ページ（Phase 1）"""
@@ -1950,27 +2137,20 @@ class CompleteGUI:
             st.session_state.show_priority_settings = False
             st.rerun()
         
-        # === 現在の設定表示と保存のみ ===
-        with st.expander("💾 設定情報", expanded=True):
+        # === 現在の設定表示 ===
+        with st.expander("ℹ️ 設定情報", expanded=True):
             # 現在の設定名を表示（変更不可）
             st.info(f"現在の設定: **{self.unified_config.get_config_name()}**")
             st.caption("📝 設定ファイルの変更・新規作成はメインページで行ってください")
-            
-            # 保存のみ
-            if st.button("💾 設定を保存", use_container_width=True, key="priority_save_only", type="primary"):
-                if self.unified_config.save_config():
-                    st.success("✅ 設定を保存しました")
-                    st.balloons()
-                else:
-                    st.error("保存に失敗しました")
+            st.caption("💾 変更は自動保存されます")
         
         st.markdown("---")
         
         st.info("📝 優先度: 3=最優先, 2=普通, 1=可能, 0=不可")
         
         # 現在の優先度設定取得
-        current_priorities = self.config_manager.get_employee_priorities()
-        duty_names = self.config_manager.get_duty_names()
+        current_priorities = self.unified_config.get_employee_priorities()
+        duty_names = self.unified_config.get_duty_names()
         
         # 優先度選択肢
         priority_options = ["0 (不可)", "1 (可能)", "2 (普通)", "3 (最優先)"]
@@ -2012,7 +2192,8 @@ class CompleteGUI:
                         f"{duty_name}",
                         priority_options,
                         index=current_value,
-                        key=f"priority_{emp_name}_{duty_name}"
+                        key=f"priority_{emp_name}_{duty_name}",
+                        on_change=self._auto_save_priorities
                     )
                     
                     # 数値を抽出
@@ -2032,18 +2213,6 @@ class CompleteGUI:
             new_priorities[emp_name] = emp_priorities
             st.markdown("---")
         
-        # 簡易保存機能（下部に配置）
-        st.markdown("### 💾 設定を保存")
-        if st.button("💾 設定を保存", use_container_width=True, type="primary", key="bottom_save"):
-            # 優先度設定を統一設定に反映してから保存
-            if self.unified_config.update_priorities(new_priorities):
-                if self.unified_config.save_config():
-                    st.success("✅ 優先度設定を保存しました")
-                    st.balloons()
-                else:
-                    st.error("保存に失敗しました")
-            else:
-                st.error("優先度設定の更新に失敗しました")
         
         st.markdown("---")
         
@@ -2091,8 +2260,24 @@ class CompleteGUI:
         
         # === 統一保存UI（新規追加）===
         with st.expander("💾 設定の保存・読み込み", expanded=True):
-            # 現在の設定名を表示
-            st.info(f"現在の設定: **{self.unified_config.get_config_name()}**")
+            # プロファイルモード表示
+            if self.unified_config.profile_mode:
+                st.warning(f"📂 プロファイルモード: **{self.unified_config.get_config_name()}**")
+                st.caption(f"ファイル: {os.path.basename(self.unified_config.current_profile_path)}")
+                
+                # メイン設定に戻るボタン
+                if st.button("🏠 メイン設定に戻る", use_container_width=True, type="secondary"):
+                    self.unified_config.exit_profile_mode()
+                    # ✅ セッション状態を強制的にクリア・更新
+                    employees = self.unified_config.get_employees()
+                    st.session_state.last_employees = employees.copy()
+                    st.session_state.calendar_data = {}
+                    
+                    st.success("✅ メイン設定に戻りました")
+                    st.rerun()
+            else:
+                # 現在の設定名を表示
+                st.info(f"現在の設定: **{self.unified_config.get_config_name()}**")
             
             # 保存
             st.subheader("💾 保存")
@@ -2131,43 +2316,33 @@ class CompleteGUI:
                 if st.button("📥 読み込む", use_container_width=True):
                     filepath = profile_options[selected_profile]
                     if self.unified_config.load_profile(filepath):
-                        # 年月設定を保持
-                        current_year = getattr(self, 'year', 2025)
-                        current_month = getattr(self, 'month', 6)
+                        # プロファイルから従業員リストを取得
+                        employees = self.unified_config.get_employees()
                         
-                        # 重要: config_managerとlocation_managerを統一設定と同期
-                        self.config_manager.current_config = copy.deepcopy(self.unified_config.config)
-                        self.location_manager.duty_locations = self.unified_config.get_work_locations()
-                        self.location_manager.holiday_type = self.unified_config.get_holiday_type()
+                        # セッション状態を完全にリセット
+                        for key in list(st.session_state.keys()):
+                            if key.startswith('priority_') or key == 'calendar_data':
+                                del st.session_state[key]
                         
-                        # デバッグ: 設定名更新を確認
-                        print(f"[DEBUG] プロファイル読み込み後の設定名: {self.unified_config.get_config_name()}")
+                        # 新しい従業員リストでセッション状態を更新
+                        st.session_state.last_employees = employees.copy()
+                        st.session_state.settings_changed = False
                         
-                        # プロファイルから希望データを取得（新しいプロファイルのデータ）
+                        # プロファイルから希望データを復元
                         profile_calendar_data = self.unified_config.config.get("calendar_data", {})
-                        
-                        # セッション状態をクリア
-                        st.session_state.clear()
-                        
-                        # 希望データと年月設定を復元
                         if profile_calendar_data:
-                            # 新形式（年月情報付き）の場合
                             if "calendar_data" in profile_calendar_data:
                                 saved_data = profile_calendar_data["calendar_data"]
                                 restored_data = self._deserialize_calendar_data(saved_data)
                                 st.session_state.calendar_data = restored_data.copy()
-                            # 旧形式の場合
                             else:
                                 restored_data = self._deserialize_calendar_data(profile_calendar_data)
                                 st.session_state.calendar_data = restored_data.copy()
                         
-                        # 年月設定を復元
-                        st.session_state.preserved_year = current_year
-                        st.session_state.preserved_month = current_month
+                        st.success(f"✅ {selected_profile} を読み込みました")
+                        st.success(f"👥 従業員: {', '.join(employees[:5])}{'...' if len(employees) > 5 else ''}")
                         
-                        st.success("✅ 設定を読み込みました")
-                        # 強制リフレッシュを促す
-                        st.info("画面を更新しています...")
+                        # 強制的に画面を再描画
                         st.rerun()
                     else:
                         st.error("読み込みに失敗しました")
@@ -2193,7 +2368,7 @@ class CompleteGUI:
         st.markdown("---")
         
         # 現在の勤務場所表示
-        duty_names = self.location_manager.get_duty_names()
+        duty_names = self.unified_config.get_duty_names()
         st.write("**現在の勤務場所:**")
         for name in duty_names:
             st.write(f"• {name}")
@@ -2240,7 +2415,7 @@ class CompleteGUI:
         if 'last_employees' in st.session_state and st.session_state.last_employees:
             saved_employees = st.session_state.last_employees
         else:
-            saved_employees = self.config_manager.get_employees()
+            saved_employees = self.unified_config.get_employees()
             # セッション状態に保存
             st.session_state.last_employees = saved_employees
         
@@ -2248,7 +2423,9 @@ class CompleteGUI:
             "従業員名（1行に1名）", 
             value="\n".join(saved_employees),
             height=150,
-            help="変更後は下の保存ボタンを押してください"
+            key="employees_text",
+            on_change=self._auto_save_employees,
+            help="変更すると自動保存されます"
         )
         new_employees = [emp.strip() for emp in employees_text.split('\n') if emp.strip()]
         
@@ -2266,26 +2443,13 @@ class CompleteGUI:
             estimated_duties = (len(new_employees) - 5) // 3  # バッファ5名除いて3名体制
             st.info(f"💡 推定対応可能勤務数: 約{estimated_duties}勤務（3名体制想定）")
         
-        # 従業員保存機能
-        col1, col2, col3 = st.columns([1, 1, 2])
+        # 従業員管理機能
+        col1, col2 = st.columns([1, 1])
         
         with col1:
-            if st.button("💾 従業員設定を保存", type="primary"):
-                if len(new_employees) >= 2:
-                    # 統一設定に保存
-                    if self.unified_config.update_employees(new_employees):
-                        st.success("✅ 従業員設定を保存しました")
-                        st.session_state.last_employees = new_employees.copy()
-                        st.rerun()
-                    else:
-                        st.error("保存に失敗しました")
-                else:
-                    st.error("❌ 従業員は最低2名必要です")
-        
-        with col2:
             if st.button("🔄 元に戻す"):
-                default_employees = self.config_manager.default_config["employees"].copy()
-                self.config_manager.current_config["employees"] = default_employees
+                default_employees = ["Aさん", "Bさん", "Cさん"]  # デフォルト従業員
+                self.unified_config.update_employees(default_employees)
                 st.session_state.last_employees = default_employees
                 st.success("✅ デフォルト従業員設定に戻しました")
                 st.rerun()
@@ -2294,12 +2458,15 @@ class CompleteGUI:
         if 'last_employees' not in st.session_state:
             st.session_state.last_employees = saved_employees
         
-        # 現在の従業員を設定（保存されたものを使用）
-        self.employees = saved_employees
+        # 現在の従業員を設定（統一設定から取得）
+        self.employees = self.unified_config.get_employees()
         
         # 変更がある場合の警告表示
         if new_employees != saved_employees:
             st.warning("⚠️ 従業員設定に変更があります。保存ボタンを押して保存してください。")
+        
+        # デバッグユーティリティ（プロファイルモード時のみ表示）
+        self.verify_profile_integrity()
         
         # 前月末勤務設定
         st.header("🔄 前月末勤務情報")
@@ -2320,7 +2487,7 @@ class CompleteGUI:
         prev_year, _ = self._get_prev_month_info()
         prev_days = calendar.monthrange(prev_year, prev_month)[1]
         
-        duty_options = ["未入力"] + self.location_manager.get_duty_names() + ["非番", "休"]
+        duty_options = ["未入力"] + self.unified_config.get_duty_names() + ["非番", "休"]
         
         for emp_idx, emp in enumerate(self.employees):
             with st.expander(f"{emp}の前月末勤務"):
@@ -2340,7 +2507,7 @@ class CompleteGUI:
                     emp_schedule.append(shift)
                     
                     # リアルタイム警告
-                    if i == PREV_DAYS_COUNT-1 and shift in self.location_manager.get_duty_names():
+                    if i == PREV_DAYS_COUNT-1 and shift in self.unified_config.get_duty_names():
                         st.error(f"⚠️ {emp}は前日({prev_month}月{day_num}日)に{shift}勤務 → {self.month}月1日は非番")
                 
                 prev_schedule[emp] = emp_schedule
@@ -2482,7 +2649,7 @@ class CompleteGUI:
             
             with tab2:
                 # 勤務場所選択
-                duty_names = self.location_manager.get_duty_names()
+                duty_names = self.unified_config.get_duty_names()
                 
                 duty_date = st.date_input(
                     "勤務希望日",
@@ -2695,7 +2862,7 @@ class CompleteGUI:
                     emp_data = self.prev_schedule_data[emp]
                     if len(emp_data) >= 1:
                         last_shift = emp_data[-1]
-                        if last_shift in self.location_manager.get_duty_names():
+                        if last_shift in self.unified_config.get_duty_names():
                             cross_constraints_preview.append(f"{emp}: 前日{last_shift}勤務 → 1日目非番")
             
             st.write(f"**合計**: 休暇希望{total_holidays}件, 勤務希望{total_duties}件")
@@ -2768,9 +2935,9 @@ class CompleteGUI:
         w = result['w']
         employees = result['employees']
         n_days = result['n_days']
-        location_manager = result['location_manager']
+        unified_config = result['unified_config']
         
-        duty_names = location_manager.get_duty_names()
+        duty_names = unified_config.get_duty_names()
         
         # テーブル作成
         table_data = []
